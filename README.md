@@ -6,8 +6,8 @@ The above is subject to change.
 
 Task 1: Tokenization & Embedding Pipeline (by: Danny & Shamik)
 
-Task 2: TBD
+Task 2: Cosine Similarity Experiments with Homographs
 
-Task 3: TBD
+Task 3: Image-based Disambiguation with CLIP (or something more recent)
 
-TASK 4: TBD
+TASK 4: Lexical + Visual Knowledge Integration (WordNet + Vision)? 
