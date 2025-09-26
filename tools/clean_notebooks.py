@@ -2,7 +2,6 @@
 """Clean Jupyter notebooks by removing top-level metadata.widgets and ensuring nbformat metadata.
 
 Usage: python tools/clean_notebooks.py <notebook1.ipynb> [notebook2.ipynb ...]
-This script is safe to run as a pre-commit hook to avoid GitHub rendering issues.
 """
 import sys
 import json
