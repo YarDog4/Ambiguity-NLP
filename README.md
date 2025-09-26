@@ -3,6 +3,22 @@
 This GitHub repository contains notebooks for our COSC 524 final project on Visual Word Sense Disambiguation (VWSD). As a group, we implement and compare different tokenization approaches (character-level, subword, and word embeddings) to establish text-only baselines. We then integrate image embeddings (via CLIP) to test how visual context shifts similarity scores and reduces linguistic ambiguity. Finally, we calculate cosine similarity scores of captions containing homographs (e.g., bank, jam, bat) to measure ambiguity.  The project explores how tokenization and embeddings interact with multimodal models, and quantifies the extent to which images improve disambiguation of ambiguous captions.
 
 The above is subject to change.
+Pre-commit notebook hygiene
+---------------------------
+This repository includes a local pre-commit hook configured to clean Jupyter notebooks before commit and avoid GitHub rendering issues related to widget metadata.
+
+To enable it locally (recommended):
+
+1. Install pre-commit:
+
+	pip install pre-commit
+
+2. Install the hooks in your repo (run once):
+
+	pre-commit install
+
+After that, any staged `.ipynb` file will be passed to `tools/clean_notebooks.py` which removes top-level `metadata.widgets` and ensures minimal nbformat metadata.
+
 
 Task 1: Tokenization & Embedding Pipeline (by: Danny & Shamik)
 

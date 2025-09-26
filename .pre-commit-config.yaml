@@ -1,0 +1,10 @@
+repos:
+  - repo: local
+    hooks:
+      - id: clean-notebooks
+        name: Clean notebooks metadata
+        entry: python3 tools/clean_notebooks.py
+        language: system
+        files: "\\.ipynb$"
+        pass_filenames: true
+        stages: [commit]
