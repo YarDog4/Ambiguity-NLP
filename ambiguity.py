@@ -1,11 +1,56 @@
+import os
 import torch
+import pandas as pd
 import numpy as np
+from PIL import Image
 
 import nltk
+from tqdm import tqdm
 from transformers import BertTokenizerFast, BertModel
 from nltk.corpus import wordnet as wn
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+
+
+############################## Load in the SemEval data ##############################
+
+def load_data(file_path, train_val="train", target_size=(384, 384)):
+        """Load in the data
+
+        Args:
+            file_path (str): The file path
+            train_val (str): Whether to load in the train, test, or trial set
+            target_size (tuple): The size of each image to use
+                Use (224, 224) for CLIP only, (384, 384) for BLIP
+
+        Returns:
+            data (DataFrame): Target, Sentence, image_0-9, label
+            image_dict (dict): Map image name to image
+        """
+        # Train/trial/test set
+        path = os.path.join(file_path, train_val+"_v1")
+
+        # Load in the data
+        path_data = os.path.join(path, train_val+".data.v1.txt")
+        data = pd.read_csv(path_data, sep='\t', header=None)
+        data.columns = ['target', 'sentence'] + [f'image_{i}' for i in range(data.shape[1] - 2)]  # Rename columns for clarity
+
+        # Load in the labels
+        path_labels = os.path.join(path, train_val+".gold.v1.txt")
+        with open(path_labels, "r") as f: gold_labels = [line.strip() for line in f]  # Load gold labels as a list
+        data['label'] = gold_labels  # Adds as the last column
+
+        # Load in the images
+        path_images = os.path.join(path, train_val+"_images_v1")
+        image_dict = {}
+        files = os.listdir(path_images)
+        for filename in tqdm(files, total=len(files), desc="Loading in the Images", unit="image"):
+            if filename.lower().endswith('.jpg'): 
+                img = Image.open(os.path.join(path_images, filename)).convert('RGB')
+                img_resized = img.resize(target_size, resample=Image.BICUBIC)
+                image_dict[filename] = img_resized
+
+        return data, image_dict
 
 
 ############################## Get Embeddings ##############################
@@ -126,10 +171,6 @@ def choose_definition(target, context_embedding, tokenizer=None, model=None, pri
 
 if __name__ == "__main__":
 
-    # Example sentence and target from the dataset
-    target = "router"
-    sentence = "internet router"
-
     # Define our tokenizer and model
     tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')  # Initialize tokenizer and model
     model = BertModel.from_pretrained('bert-base-uncased')
@@ -139,9 +180,20 @@ if __name__ == "__main__":
     nltk.download('omw-1.4')   # Download multilingual WordNet
     print()
 
-    # Get the contextual embedding for the target word in the short sentence
-    context_embedding = get_context(sentence, target, tokenizer=tokenizer, model=model)
-    best_syn, best_emb = choose_definition(target, context_embedding, tokenizer=tokenizer, model=model, print_output=True)
+    # Load in the data
+    file_path = "dataset"   # File path to the dataset (which should contain the folders test_v1, train_v1, and trial_v1)
+    data, image_dict = load_data(file_path=file_path, train_val="trial")
+
+    for idx, row in data.iterrows():   # Iterate through the data
+        target = row['target']
+        sentence = row['sentence']
+        images = [row[f'image_{i}'] for i in range(10)]  # Collect image filenames image_0 to image_9
+        label = row['label']
+
+        # Get the contextual embedding for the target word in the short sentence
+        print("\nSentence:", sentence, "\nTarget:", target)
+        context_embedding = get_context(sentence, target, tokenizer=tokenizer, model=model)
+        best_syn, best_emb = choose_definition(target, context_embedding, tokenizer=tokenizer, model=model, print_output=True)
 
     # TODO: For choosing the best definition
         # TODO: Rather than using all WordNet definitions, only use the ones for the correct part of speech
@@ -151,6 +203,6 @@ if __name__ == "__main__":
         # TODO: Get a good dataset for images
         # TODO: Find best VLM (Clip, maybe something else)
     # TODO: Find a way to determine if we should use the definition embedding, the image embedding, or both to make the prediction
-    # TODO: Integrate this script the the ambiguity dataset https://raganato.github.io/vwsd/
-        # TODO: Actually make predictions
-        # TODO: Get evaluation metrics to compare to the paper
+        # TODO: Maybe we can weight all of them based on ther similarity, using some sort of cross entropy with tempurature
+    # TODO: Actually make predictions
+    # TODO: Get evaluation metrics to compare to the paper
