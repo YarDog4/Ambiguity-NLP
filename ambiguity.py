@@ -147,9 +147,6 @@ def choose_image(target, sentence, images, image_dict,
         text_emb = text_emb.unsqueeze(0) #(1, d)
         device = next(model.parameters()).device
         
-        
-        
-        
         # Get embeddings for each of the images (batching, normalized)
         pil_batch = []
         valid_names = []
@@ -162,16 +159,12 @@ def choose_image(target, sentence, images, image_dict,
                 pil_batch.append(Image.new('RGB', (224, 224)))
                 valid_names.append(name)
         
-        
         #Process in one batch
         with torch.no_grad():
             inputs = processor(images=pil_batch, return_tensors="pt")
             inputs = {k: v.to(device) for k, v in inputs.items()}
             img_feats = model.get_image_features(**inputs)   # (N, d)
             img_feats = F.normalize(img_feats, p=2, dim=-1)
-        
-        
-        
         
         
         # image_embeddings = []  # Store the image embeddings
@@ -188,12 +181,8 @@ def choose_image(target, sentence, images, image_dict,
 
         # # Get the cosine similarities (dot product after l2-normalization)
         sims = (text_emb @ img_feats.T).squeeze(0).detach().cpu().numpy()  # (N,)
-
         # sims = cosine_similarity(best_definition_emb, definition_vecs_np)[0]
         
-        
-        
-
         # Get indices of images sorted by similarity (highest first)
         ranked_indices = np.argsort(sims)[::-1]
         ranked_images = [valid_names[i] for i in ranked_indices]
@@ -220,12 +209,9 @@ def choose_image(target, sentence, images, image_dict,
 
 if __name__ == "__main__":
     
-    if torch.backends.mps.is_available():
-        device = "mps"
-    elif torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
+    if torch.backends.mps.is_available(): device = "mps"
+    elif torch.cuda.is_available(): device = "cuda"
+    else: device = "cpu"
 
     file_path = "dataset"   # File path to the dataset (which should contain the folders test_v1, train_v1, and trial_v1)
     print_output = False    # Set to True to visualize the results
@@ -234,7 +220,6 @@ if __name__ == "__main__":
     # blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")    # BLIP model for image captioning
     # processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", use_fast=True)   # Prepares images to be passed into BLIP
 
-    
     # Define the various pretrained models
     model_name = "openai/clip-vit-base-patch32"
     tokenizer = CLIPProcessor.from_pretrained(model_name)  # Tokenizer
@@ -248,6 +233,7 @@ if __name__ == "__main__":
     # Load in the data
     data, image_dict = load_data(file_path=file_path, train_val="trial")  # trial is for debugging (use train or test for evaluation)
 
+    predicted_ranks = []
     for idx, row in data.iterrows():   # Iterate through the data
         target = row['target']
         sentence = row['sentence']
@@ -261,8 +247,17 @@ if __name__ == "__main__":
         )
         
         # TODO: Evaluate the model
-        predicted_rank = ranked_images.index(label)  # Similarity rank of the image that should have been selected (lower is better)
+        predicted_rank = ranked_images.index(label)+1  # Similarity rank of the image that should have been selected (lower is better)
         print("Predicted Rank:", predicted_rank)
+        predicted_ranks.append(predicted_rank)
+
+    predicted_ranks = np.array(predicted_ranks)
+    mrr = np.mean(1/predicted_ranks)   # Mean reciprical rank
+    hit_rate = np.sum(predicted_ranks == 1) / len(predicted_ranks)
+
+    print("---------------------------------")
+    print(f"MRR: {mrr}")
+    print(f"Hit Rate: {hit_rate}")
 
 
     # TODO: For choosing the best definition
@@ -278,7 +273,6 @@ if __name__ == "__main__":
         # TODO: Should we clean the captions to remove the given sentence?
     # TODO: Find a way to determine if we should use the definition embedding, the image embedding, or both to make the prediction
         # TODO: Maybe we can weight all of them based on ther similarity, using some sort of cross entropy with tempurature
-    # TODO: Get evaluation metrics to compare to the paper
     
     
     
