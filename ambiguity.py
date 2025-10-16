@@ -50,9 +50,12 @@ def load_data(file_path, train_val="train", target_size=(384, 384)):
     files = os.listdir(path_images)
     for filename in tqdm(files, total=len(files), desc="Loading in the Images", unit="image"):
         if filename.lower().endswith('.jpg') or filename.lower().endswith('.png'): 
-            img = Image.open(os.path.join(path_images, filename)).convert('RGB')
-            img_resized = img.resize(target_size, resample=Image.BICUBIC)
-            image_dict[filename] = img_resized
+            try:
+                img = Image.open(os.path.join(path_images, filename)).convert('RGB')
+                img_resized = img.resize(target_size, resample=Image.BICUBIC)
+                image_dict[filename] = img_resized
+            except Exception:
+                continue
 
     return data, image_dict
 
@@ -231,7 +234,7 @@ if __name__ == "__main__":
     # print()
 
     # Load in the data
-    data, image_dict = load_data(file_path=file_path, train_val="trial")  # trial is for debugging (use train or test for evaluation)
+    data, image_dict = load_data(file_path=file_path, train_val="train")  # trial is for debugging (use train or test for evaluation)
 
     predicted_ranks = []
     for idx, row in data.iterrows():   # Iterate through the data
