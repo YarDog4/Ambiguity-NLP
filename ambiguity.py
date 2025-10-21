@@ -234,7 +234,7 @@ if __name__ == "__main__":
     # print()
 
     # Load in the data
-    data, image_dict = load_data(file_path=file_path, train_val="train")  # trial is for debugging (use train or test for evaluation)
+    data, image_dict = load_data(file_path=file_path, train_val="trial")  # trial is for debugging (use train or test for evaluation)
 
     predicted_ranks = []
     for idx, row in data.iterrows():   # Iterate through the data
