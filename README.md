@@ -13,3 +13,9 @@ Task 3: Image-based Disambiguation with CLIP (or something more recent) - (we sh
 Task 4: Lexical + Visual Knowledge Integration (WordNet + Vision)? - (we should all work on this together)
 
 Question: Since we’re using embeddings (Sentence-BERT, CLIP, etc.), our project is really encoder-focused in terms of Transformers. Do we want to explicitly say that in the README, or just leave it implied?
+
+
+How to run the code:
+
+On a window's system, you can run this code by writing python filename.py in the terminal's command line.
+The code that you should run to see progressive results include ambiguity.py, ambiguity_final.py, test.py

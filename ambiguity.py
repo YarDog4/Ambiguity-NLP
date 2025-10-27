@@ -14,8 +14,6 @@ import torch.nn.functional as F
 # from nltk.corpus import wordnet as wn
 # from sklearn.metrics.pairwise import cosine_similarity
 
-
-
 ############################## Load in the SemEval data ##############################
 
 def load_data(file_path, train_val="train", target_size=(384, 384)):
@@ -52,8 +50,8 @@ def load_data(file_path, train_val="train", target_size=(384, 384)):
         if filename.lower().endswith('.jpg') or filename.lower().endswith('.png'): 
             try:
                 img = Image.open(os.path.join(path_images, filename)).convert('RGB')
-                img_resized = img.resize(target_size, resample=Image.BICUBIC)
-                image_dict[filename] = img_resized
+                # img_resized = img.resize(target_size, resample=Image.BICUBIC)
+                image_dict[filename] = img
             except Exception:
                 continue
 
@@ -262,7 +260,7 @@ if __name__ == "__main__":
     print(f"MRR: {mrr}")
     print(f"Hit Rate: {hit_rate}")
 
-
+    # FUTURE WORK
     # TODO: For choosing the best definition
         # TODO: Rather than using all WordNet definitions, only use the ones for the correct part of speech
         # TODO: Use synonyms on the target word and get embeddings from them as well
@@ -277,13 +275,7 @@ if __name__ == "__main__":
     # TODO: Find a way to determine if we should use the definition embedding, the image embedding, or both to make the prediction
         # TODO: Maybe we can weight all of them based on ther similarity, using some sort of cross entropy with tempurature
     
-    
-    
-    
-    
-    
-    
-    
+# PREVIOUS IMPLEMENTATION WITH BERT + BLIP
 # def get_context(sentence, target, tokenizer=None, model=None):  # Contextual Embedding with BERT
 #     """Get the contextual embedding for a target word, given the context
 
