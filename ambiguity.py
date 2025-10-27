@@ -16,7 +16,7 @@ import torch.nn.functional as F
 
 ############################## Load in the SemEval data ##############################
 
-def load_data(file_path, train_val="train", target_size=(384, 384)):
+def load_data(file_path, train_val="test", target_size=(384, 384)):
     """Load in the data
 
     Args:
@@ -232,7 +232,7 @@ if __name__ == "__main__":
     # print()
 
     # Load in the data
-    data, image_dict = load_data(file_path=file_path, train_val="trial")  # trial is for debugging (use train or test for evaluation)
+    data, image_dict = load_data(file_path=file_path, train_val="test")  # trial is for debugging (use train or test for evaluation)
 
     predicted_ranks = []
     for idx, row in data.iterrows():   # Iterate through the data
