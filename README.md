@@ -18,4 +18,5 @@ Question: Since we’re using embeddings (Sentence-BERT, CLIP, etc.), our projec
 # How to run the code:
 
 On a window's system, you can run this code by writing ```python filename.py``` in the terminal's command line.
-The code that you should run to see progressive results include ambiguity.py, ambiguity_final.py, test.py
+
+The code that you should run to see progressive results include ```ambiguity.py```, ```ambiguity_final.py```, ```test.py```
