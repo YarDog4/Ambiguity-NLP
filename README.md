@@ -20,3 +20,15 @@ Question: Since we’re using embeddings (Sentence-BERT, CLIP, etc.), our projec
 On a window's system, you can run this code by writing ```python filename.py``` in the terminal's command line.
 
 The code that you should run to see progressive results include ```ambiguity.py```, ```ambiguity_final.py```, ```test.py```
+
+
+## RESULTS:
+
+### Trial Sets
+Base Clip Approach:
+```MRR: 0.734375
+Hit Rate: 0.5625```
+
+Clip with Wordnet:
+```MRR: 0.5355902777777778
+Hit Rate: 0.3125```
