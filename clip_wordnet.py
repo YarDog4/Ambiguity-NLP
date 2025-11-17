@@ -157,6 +157,7 @@ def choose_definition(target, sentence, tokenizer=None, model=None, print_output
         best_syn: The best WordNet synset (or None if none exist)
         best_emb (Tensor): The CLIP text embedding of the best definition
                            (or the sentence embedding if no synsets found)
+        context_embedding (Tensor): The CLIP text embedding of the whole sentence
     """
 
     # Load the pretrained English model
@@ -192,7 +193,7 @@ def choose_definition(target, sentence, tokenizer=None, model=None, print_output
             print(
                 f"No synsets found for '{target}', falling back to sentence embedding."
             )
-        return None, context_embedding
+        return None, context_embedding, context_embedding
 
     definition_embeddings = []
     # Process the sentence
@@ -230,7 +231,7 @@ def choose_definition(target, sentence, tokenizer=None, model=None, print_output
         print("Best sense:", best_syn.name())
         print("Definition:", best_syn.definition())
 
-    return best_syn, best_emb
+    return best_syn, best_emb, context_embedding
 
 
 ############################## Connect Images To Text ##############################
@@ -247,6 +248,7 @@ def choose_image(
     blip_model=None,
     ner=None,
     filter_for_pos=True,
+    embedding_weights=[0.5,0.5],
     print_output=False,
 ):
     """Given a target word, sentence, and a list of candidate images, choose the image that best matches the target word
@@ -279,7 +281,7 @@ def choose_image(
 
         # 1) Use WordNet + CLIP to pick the best sense
         #    tokenizer=processor (CLIPProcessor), model=model (CLIPModel)
-        best_syn, best_definition_emb = choose_definition(
+        best_syn, best_definition_emb, context_embedding = choose_definition(
             target,
             sentence,
             tokenizer=processor,
@@ -291,8 +293,10 @@ def choose_image(
 
         # 2) Use the best definition embedding as the text query in CLIP space.
         #    If WordNet had no synsets, best_definition_emb is just the sentence embedding.
-        text_emb = best_definition_emb.unsqueeze(0)  # (1, d)
+        mean_embedding = embedding_weights[0]*best_definition_emb + embedding_weights[1]*context_embedding
+        text_emb = mean_embedding.unsqueeze(0)  # (1, d)
         device = next(model.parameters()).device
+
 
         # Get embeddings for each of the images (batching, normalized)
         pil_batch = []
@@ -394,6 +398,7 @@ if __name__ == "__main__":
             blip_model=None,
             ner=ner,
             filter_for_pos=False,    # Whether or not to filter for the POS
+            embedding_weights=[0.15,0.85],   # How to weight definition embedding and sentence embedding
             print_output=print_output,
         )
 
