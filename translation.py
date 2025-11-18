@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import pickle
 
 from tqdm import tqdm
-from transformers import CLIPModel, CLIPProcessor
+from transformers import CLIPModel, CLIPProcessor,  MarianMTModel, MarianTokenizer
 import torch.nn.functional as F
 # import nltk
 # from transformers import BertTokenizerFast, BertModel, BlipProcessor, BlipForConditionalGeneration, AutoModelForSequenceClassification
@@ -99,6 +99,91 @@ def load_data(file_path, train_val, target_size=(384, 384), use_cache=True):
 #     probs = torch.softmax(outputs.logits, dim=-1)
 #     return probs[0][1].item()  # probability of "ambiguous"
 
+def get_translator(source_lang="en", target_lang="es"):
+    """Load translation model and tokenizer
+    
+    Args:
+        source_lang (str): Source language code (e.g., 'en')
+        target_lang (str): Target language code (e.g., 'es', 'fr', 'de')
+    
+    Returns:
+        model: Translation model
+        tokenizer: Translation tokenizer
+    """
+    model_name = f"Helsinki-NLP/opus-mt-{source_lang}-{target_lang}"
+    tokenizer = MarianTokenizer.from_pretrained(model_name)
+    model = MarianMTModel.from_pretrained(model_name)
+    return model, tokenizer
+
+def translate_text(text, trans_model, trans_tokenizer, device="cpu"):
+    """Translate text using MarianMT
+    
+    Args:
+        text (str): Text to translate
+        trans_model: Translation model
+        trans_tokenizer: Translation tokenizer
+        device (str): Device to use
+        
+    Returns:
+        translated (str): Translated text
+    """
+    trans_model = trans_model.to(device)
+    inputs = trans_tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    
+    with torch.no_grad():
+        translated = trans_model.generate(**inputs)
+    
+    return trans_tokenizer.decode(translated[0], skip_special_tokens=True)
+
+def get_multilingual_embeddings(text, languages, clip_processor, clip_model, device=None):
+    """Get embeddings for text in multiple languages and average them"""
+    if device is None:
+        device = next(clip_model.parameters()).device
+    
+    embeddings = []
+    
+    # Add original English embedding
+    en_emb = get_sentence_embedding(text, tokenizer=clip_processor, model=clip_model)
+    embeddings.append(en_emb)
+    
+    # Cache translation models
+    translation_models = {}
+    
+    # Add embeddings for each translation
+    for lang in languages:
+        try:
+            # Load model
+            if lang not in translation_models:
+                trans_model, trans_tokenizer = get_translator("en", lang)
+                trans_model = trans_model.to(device)
+                translation_models[lang] = (trans_model, trans_tokenizer)
+            else:
+                trans_model, trans_tokenizer = translation_models[lang]
+            
+            # Translate
+            inputs = trans_tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                translated_tokens = trans_model.generate(**inputs)
+            translated = trans_tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
+            
+            trans_emb = get_sentence_embedding(translated, tokenizer=clip_processor, model=clip_model)
+            embeddings.append(trans_emb)
+            print(f"  [{lang}] {translated}")
+        except Exception as e:
+            print(f"  Warning: Could not translate to {lang}: {e}")
+            continue
+    
+    # Average embeddings
+    if len(embeddings) > 1:
+        avg_embedding = torch.stack(embeddings).mean(dim=0)
+        avg_embedding = F.normalize(avg_embedding, p=2, dim=-1)
+        return avg_embedding
+    else:
+        return embeddings[0]
+
 def get_sentence_embedding(text, tokenizer=None, model=None):   # Get an embedding for a definition or sentence
     """Get the sentence embedding by mean-pooling the last hidden states from BERT
     
@@ -136,7 +221,8 @@ def get_sentence_embedding(text, tokenizer=None, model=None):   # Get an embeddi
 
 
 def choose_image(target, sentence, images, image_dict, 
-                 tokenizer=None, model=None, processor=None, blip_model=None, print_output=False):
+                 tokenizer=None, model=None, processor=None, blip_model=None, 
+                 use_translation=False, languages=None, print_output=False):
     """Given a target word, sentence, and a list of candidate images, choose the image that best matches the target word
 
     Args:
@@ -144,11 +230,12 @@ def choose_image(target, sentence, images, image_dict,
         sentence (str): The sentence
         images (list): List of the images
         image_dict (dict): Dictionary that maps image names to the images
-        context_embedding (tensot): The contextual embedding of the target word in its given sentence
         tokenizer: The tokenizer
         model: The model
         processor: The BlipProcessor
         blip_model: The Blip model
+        use_translation (bool): Whether to use multilingual embeddings
+        languages (list): List of language codes to translate to (e.g., ['es', 'fr', 'de'])
         print_output: Whether or not to print the output out
 
     Returns:
@@ -159,17 +246,18 @@ def choose_image(target, sentence, images, image_dict,
     
     if isinstance(processor, CLIPProcessor) and isinstance(model, CLIPModel):
     
-        # Get the contextual embedding for the target word in the short sentence
         if print_output: print("\nSentence:", sentence, "\nTarget:", target)
-        # context_embedding = get_context(sentence, target, tokenizer=tokenizer, model=model)
-
-        # Find the definition that best fits the word
-        # best_syn, best_definition_emb = choose_definition(target, context_embedding, tokenizer=tokenizer, model=model, print_output=print_output)
         
-        # Text embeddings (normalized)
-        text_emb = get_sentence_embedding(sentence, tokenizer=processor, model=model)
-        text_emb = text_emb.unsqueeze(0) #(1, d)
         device = next(model.parameters()).device
+        
+        # Get text embeddings (with or without translation)
+        if use_translation and languages:
+            # print(f"Using multilingual embeddings ({len(languages)} languages):")
+            text_emb = get_multilingual_embeddings(sentence, languages, processor, model, device)
+        else:
+            text_emb = get_sentence_embedding(sentence, tokenizer=processor, model=model)
+        
+        text_emb = text_emb.unsqueeze(0) #(1, d)
         
         # Get embeddings for each of the images (batching, normalized)
         pil_batch = []
@@ -190,39 +278,20 @@ def choose_image(target, sentence, images, image_dict,
             img_feats = model.get_image_features(**inputs)   # (N, d)
             img_feats = F.normalize(img_feats, p=2, dim=-1)
         
-        
-        # image_embeddings = []  # Store the image embeddings
-        # for image_name in images:
-        #     image = image_dict[image_name]
-        #     caption = generate_caption_given_sentence(sentence, image, processor=processor, blip_model=blip_model, show_image=False)
-        #     caption_embedding = get_sentence_embedding(caption, tokenizer=tokenizer, model=model)
-        #     image_embeddings.append((image_name, caption, caption_embedding))   # Store the sense and definition embedding
-
-        # # Convert to numpy arrays for similarity
-        # best_definition_emb = best_definition_emb.detach().cpu().numpy().reshape(1, -1)
-        # definition_vecs = [emb.detach().cpu().numpy().reshape(1, -1) for _, _, emb in image_embeddings]
-        # definition_vecs_np = np.vstack(definition_vecs)
-
-        # # Get the cosine similarities (dot product after l2-normalization)
+        # Get the cosine similarities (dot product after l2-normalization)
         sims = (text_emb @ img_feats.T).squeeze(0).detach().cpu().numpy()  # (N,)
-        # sims = cosine_similarity(best_definition_emb, definition_vecs_np)[0]
         
         # Get indices of images sorted by similarity (highest first)
         ranked_indices = np.argsort(sims)[::-1]
         ranked_images = [valid_names[i] for i in ranked_indices]
-        # ranked_captions = [image_embeddings[i][1] for i in ranked_indices]
-        # ranked_embs = [image_embeddings[i][2] for i in ranked_indices]
 
         if print_output:
             for rank, i in enumerate(ranked_indices):
-                # image_name, caption, emb = image_embeddings[i]
                 plt.imshow(image_dict[valid_names[i]])
-                # plt.title(f"Rank {rank+1}\nSentence: {sentence} --> Definition: {best_syn.definition()}\nSimilarity: {sims[i]}, Caption: {caption}")
                 plt.title(f"Rank {rank+1} | sim={sims[i]:.4f}\nSentence: {sentence}")
                 plt.axis('off')
                 plt.show()
             print("Ranked Images:", ranked_images)
-            print("Ranked Captions:", ranked_captions)
 
         ranked_captions = [None for _ in ranked_images]
         ranked_embs = [None for _ in ranked_images]
@@ -237,51 +306,74 @@ if __name__ == "__main__":
     elif torch.cuda.is_available(): device = "cuda"
     else: device = "cpu"
 
-    file_path = "dataset"   # File path to the dataset (which should contain the folders test_v1, train_v1, and trial_v1)
-    print_output = False    # Set to True to visualize the results
-
-    # text_model = AutoModelForSequenceClassification.from_pretrained("bert-base-uncased")
-    # blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")    # BLIP model for image captioning
-    # processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", use_fast=True)   # Prepares images to be passed into BLIP
+    file_path = "dataset"
+    print_output = False
 
     # Define the various pretrained models
     model_name = "openai/clip-vit-base-patch32"
-    tokenizer = CLIPProcessor.from_pretrained(model_name)  # Tokenizer
-    model = CLIPModel.from_pretrained(model_name).to(device)   # LLM which generates embeddings from text
-
-    # # Download wordnet definitions
-    # nltk.download('wordnet')   # Download WordNet
-    # nltk.download('omw-1.4')   # Download multilingual WordNet
-    # print()
+    tokenizer = CLIPProcessor.from_pretrained(model_name)
+    model = CLIPModel.from_pretrained(model_name).to(device)
 
     # Load in the data
-    data, image_dict = load_data(file_path=file_path, train_val="test")  # trial is for debugging (use train or test for evaluation)
+    data, image_dict = load_data(file_path=file_path, train_val="test")
 
-    predicted_ranks = []
-    for idx, row in data.iterrows():   # Iterate through the data
-        target = row['target']
-        sentence = row['sentence']
-        images = [row[f'image_{i}'] for i in range(10)]  # Collect image filenames image_0 to image_9
-        label = row['label']
+    # Experiment configurations
+    experiments = [
+        {"name": "Baseline (English only)", "use_translation": False, "languages": None},
+        {"name": "Spanish", "use_translation": True, "languages": ["es"]},
+        {"name": "French", "use_translation": True, "languages": ["fr"]},
+        {"name": "German", "use_translation": True, "languages": ["de"]},
+        {"name": "Multi (ES+FR+DE)", "use_translation": True, "languages": ["es", "fr", "de"]},
+        {"name": "Multi (ES+FR)", "use_translation": True, "languages": ["es", "fr"]},
+    ]
 
-        # processor=tokenizer (CLIPProcessor), model=model (CLIPModel); blip_model not needed
-        ranked_images, ranked_captions, ranked_embs = choose_image(
-            target, sentence, images, image_dict,
-            tokenizer=None, model=model, processor=tokenizer, blip_model=None, print_output=print_output
-        )
+    results = []
+    
+    for exp in experiments:
+        print(f"\n{'='*60}")
+        print(f"Running: {exp['name']}")
+        print(f"{'='*60}")
         
-        # TODO: Evaluate the model
-        predicted_rank = ranked_images.index(label)+1  # Similarity rank of the image that should have been selected (lower is better)
-        print("Predicted Rank:", predicted_rank)
-        predicted_ranks.append(predicted_rank)
+        predicted_ranks = []
+        for idx, row in data.iterrows():
+            target = row['target']
+            sentence = row['sentence']
+            images = [row[f'image_{i}'] for i in range(10)]
+            label = row['label']
 
-    predicted_ranks = np.array(predicted_ranks)
-    mrr = np.mean(1/predicted_ranks)   # Mean reciprical rank
-    hit_rate = np.sum(predicted_ranks == 1) / len(predicted_ranks)
+            ranked_images, _, _ = choose_image(
+                target, sentence, images, image_dict,
+                tokenizer=None, model=model, processor=tokenizer, blip_model=None,
+                use_translation=exp["use_translation"],
+                languages=exp["languages"],
+                print_output=print_output
+            )
+            
+            predicted_rank = ranked_images.index(label) + 1
+            predicted_ranks.append(predicted_rank)
 
-    print("---------------------------------")
-    print(f"MRR: {mrr}")
-    print(f"Hit Rate: {hit_rate}")
+        predicted_ranks = np.array(predicted_ranks)
+        mrr = np.mean(1/predicted_ranks)
+        hit_rate = np.sum(predicted_ranks == 1) / len(predicted_ranks)
+        
+        results.append({
+            "experiment": exp["name"],
+            "mrr": mrr,
+            "hit_rate": hit_rate
+        })
+        
+        print(f"\nResults for {exp['name']}:")
+        print(f"  MRR: {mrr:.4f}")
+        print(f"  Hit Rate: {hit_rate:.4f}")
+
+    # Print comparison table
+    print(f"\n{'='*60}")
+    print("RESULTS COMPARISON")
+    print(f"{'='*60}")
+    print(f"{'Experiment':<30} {'MRR':<12} {'Hit Rate':<12}")
+    print("-" * 60)
+    for r in results:
+        print(f"{r['experiment']:<30} {r['mrr']:<12.4f} {r['hit_rate']:<12.4f}")
 
 
     # TODO: For choosing the best definition

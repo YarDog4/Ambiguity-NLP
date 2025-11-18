@@ -15,7 +15,33 @@ Task 4: Lexical + Visual Knowledge Integration (WordNet + Vision)? - (we should 
 Question: Since we’re using embeddings (Sentence-BERT, CLIP, etc.), our project is really encoder-focused in terms of Transformers. Do we want to explicitly say that in the README, or just leave it implied?
 
 
-How to run the code:
+# How to run the code:
 
-On a window's system, you can run this code by writing python filename.py in the terminal's command line.
-The code that you should run to see progressive results include ambiguity.py, ambiguity_final.py, test.py
+On a window's system, you can run this code by writing ```python filename.py``` in the terminal's command line.
+
+The code that you should run to see progressive results include ```ambiguity.py```, ```ambiguity_final.py```, ```test.py```
+
+
+## RESULTS:
+
+### Trial Sets
+Base Clip Approach:
+
+`MRR: 0.734375`\
+`Hit Rate: 0.5625`
+
+Clip with Wordnet:
+
+`MRR: 0.5355902777777778`\
+`Hit Rate: 0.3125`
+
+Translation Results Comparison
+| Sentence Translation Experiment| MRR    | Hit Rate |
+|--------------------------------|--------|----------|
+| Baseline (English only)        | 0.7217 | 0.5788   |
+| Spanish                        | 0.6989 | 0.5508   |
+| French                         | 0.6958 | 0.5443   |  
+| German                         | 0.6729 | 0.5162   |   
+| Multi (ES+FR+DE)               | 0.6756 | 0.5313   |   
+| Multi (ES+FR)                  | 0.6827 | 0.5292   |
+
