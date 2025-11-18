@@ -26,9 +26,22 @@ The code that you should run to see progressive results include ```ambiguity.py`
 
 ### Trial Sets
 Base Clip Approach:
-```MRR: 0.734375
-Hit Rate: 0.5625```
+
+`MRR: 0.734375`\
+`Hit Rate: 0.5625`
 
 Clip with Wordnet:
-```MRR: 0.5355902777777778
-Hit Rate: 0.3125```
+
+`MRR: 0.5355902777777778`\
+`Hit Rate: 0.3125`
+
+Translation Results Comparison
+| Sentence Translation Experiment| MRR    | Hit Rate |
+|--------------------------------|--------|----------|
+| Baseline (English only)        | 0.7217 | 0.5788   |
+| Spanish                        | 0.6989 | 0.5508   |
+| French                         | 0.6958 | 0.5443   |  
+| German                         | 0.6729 | 0.5162   |   
+| Multi (ES+FR+DE)               | 0.6756 | 0.5313   |   
+| Multi (ES+FR)                  | 0.6827 | 0.5292   |
+
