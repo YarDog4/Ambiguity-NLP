@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 import pickle
-
+import spacy
 from tqdm import tqdm
 from transformers import CLIPModel, CLIPProcessor
 import torch.nn.functional as F
@@ -16,7 +16,20 @@ from nltk.corpus import wordnet as wn
 # from sklearn.metrics.pairwise import cosine_similarity
 
 
+
 ############################## Load in the SemEval data ##############################
+
+def spacy_to_wordnet_pos(spacy_pos):
+    if spacy_pos in ['NOUN', 'PROPN']:
+        return wn.NOUN
+    elif spacy_pos == 'VERB':
+        return wn.VERB
+    elif spacy_pos == 'ADJ':
+        return wn.ADJ
+    elif spacy_pos == 'ADV':
+        return wn.ADV
+    else:
+        return None
 
 
 def load_data(file_path, train_val="trial", target_size=(384, 384), use_cache=True):
@@ -126,7 +139,7 @@ def get_sentence_embedding(text, tokenizer=None, model=None):
 ############################## Choose the Best Definitional Embedding ##############################
 
 
-def choose_definition(target, sentence, tokenizer=None, model=None, print_output=False):
+def choose_definition(target, sentence, tokenizer=None, model=None, print_output=False, ner=None, filter_for_pos=True):
     """
     Given a target word and its context sentence, choose the WordNet definition
     whose CLIP text embedding is most similar to the sentence's CLIP embedding.
@@ -137,12 +150,19 @@ def choose_definition(target, sentence, tokenizer=None, model=None, print_output
         tokenizer: The tokenizer (e.g. CLIPProcessor)
         model: The text model (e.g. CLIPModel)
         print_output (bool): Whether to print similarities and chosen sense
+        ner (spacy model): Named Entity Recognition model
+        filter_for_pos (bool): Wether or not to filter for the POS
 
     Returns:
         best_syn: The best WordNet synset (or None if none exist)
         best_emb (Tensor): The CLIP text embedding of the best definition
                            (or the sentence embedding if no synsets found)
+        context_embedding (Tensor): The CLIP text embedding of the whole sentence
     """
+
+    # Load the pretrained English model
+    if ner is None: ner = spacy.load('en_core_web_sm')
+
     if tokenizer is None or model is None:
         raise ValueError(
             "Tokenizer and model (e.g. CLIPProcessor and CLIPModel) must be provided."
@@ -173,10 +193,22 @@ def choose_definition(target, sentence, tokenizer=None, model=None, print_output
             print(
                 f"No synsets found for '{target}', falling back to sentence embedding."
             )
-        return None, context_embedding
+        return None, context_embedding, context_embedding
 
     definition_embeddings = []
-    for syn in synsets:
+    # Process the sentence
+    doc = ner(sentence)
+    for token in doc:  # Find target token and get its POS tag
+        if token.text == target:
+            print(f"Target word: {token.text}, POS tag: {token.pos_}")
+            pos = token.pos_
+            break
+    wordnet_pos = spacy_to_wordnet_pos(pos)
+
+    if filter_for_pos: filtered_synsets = [syn for syn in synsets if syn.pos() == wordnet_pos]
+    else: filtered_synsets = synsets
+    if len(filtered_synsets)==0: filtered_synsets = synsets
+    for syn in filtered_synsets:
         definition = syn.definition()
         definition_embedding = get_sentence_embedding(
             definition, tokenizer=tokenizer, model=model
@@ -194,12 +226,12 @@ def choose_definition(target, sentence, tokenizer=None, model=None, print_output
 
     if print_output:
         print("The cosine similarities for each definition are:")
-        for i, syn in enumerate(synsets):
+        for i, syn in enumerate(filtered_synsets):
             print(f"{sims[i].item():.4f} {syn.name()} : {syn.definition()}")
         print("Best sense:", best_syn.name())
         print("Definition:", best_syn.definition())
 
-    return best_syn, best_emb
+    return best_syn, best_emb, context_embedding
 
 
 ############################## Connect Images To Text ##############################
@@ -214,6 +246,9 @@ def choose_image(
     model=None,
     processor=None,
     blip_model=None,
+    ner=None,
+    filter_for_pos=True,
+    embedding_weights=[0.5,0.5],
     print_output=False,
 ):
     """Given a target word, sentence, and a list of candidate images, choose the image that best matches the target word
@@ -227,6 +262,8 @@ def choose_image(
         model: The model (CLIPModel)
         processor: The CLIPProcessor
         blip_model: (unused here)
+        ner (Spacy model): Named entity recofnitin model
+        filter_for_pos (bool): Wether or not to filter for the POS
         print_output: Whether or not to print the output out
 
     Returns:
@@ -234,6 +271,7 @@ def choose_image(
         ranked_captions (list): The corresponding image captions (None here)
         ranked_embs (list): The corresponding caption embeddings (None here)
     """
+    if ner is None: ner = spacy.load('en_core_web_sm')
 
     # CLIP branch
     if isinstance(processor, CLIPProcessor) and isinstance(model, CLIPModel):
@@ -243,18 +281,22 @@ def choose_image(
 
         # 1) Use WordNet + CLIP to pick the best sense
         #    tokenizer=processor (CLIPProcessor), model=model (CLIPModel)
-        best_syn, best_definition_emb = choose_definition(
+        best_syn, best_definition_emb, context_embedding = choose_definition(
             target,
             sentence,
             tokenizer=processor,
             model=model,
             print_output=print_output,
+            ner=ner,
+            filter_for_pos=filter_for_pos
         )
 
         # 2) Use the best definition embedding as the text query in CLIP space.
         #    If WordNet had no synsets, best_definition_emb is just the sentence embedding.
-        text_emb = best_definition_emb.unsqueeze(0)  # (1, d)
+        mean_embedding = embedding_weights[0]*best_definition_emb + embedding_weights[1]*context_embedding
+        text_emb = mean_embedding.unsqueeze(0)  # (1, d)
         device = next(model.parameters()).device
+
 
         # Get embeddings for each of the images (batching, normalized)
         pil_batch = []
@@ -330,10 +372,12 @@ if __name__ == "__main__":
     model_name = "openai/clip-vit-base-patch32"
     processor = CLIPProcessor.from_pretrained(model_name)  # Processor
     model = CLIPModel.from_pretrained(model_name).to(device)  # CLIP model
+    ner = spacy.load('en_core_web_sm')
+    
 
     # Load in the data
     data, image_dict = load_data(
-        file_path=file_path, train_val="trial"
+        file_path=file_path, train_val="test"
     )  # trial is for debugging (use train or test for evaluation)
 
     predicted_ranks = []
@@ -352,6 +396,9 @@ if __name__ == "__main__":
             model=model,
             processor=processor,
             blip_model=None,
+            ner=ner,
+            filter_for_pos=False,    # Whether or not to filter for the POS
+            embedding_weights=[0.15,0.85],   # How to weight definition embedding and sentence embedding
             print_output=print_output,
         )
 
