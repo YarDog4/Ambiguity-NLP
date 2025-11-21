@@ -8,6 +8,7 @@ from PIL import Image, ImageFilter, ImageEnhance
 import matplotlib.pyplot as plt
 import random
 import nltk
+import pickle
 from nltk.corpus import wordnet as wn
 
 from tqdm import tqdm
@@ -17,35 +18,64 @@ import torch.nn.functional as F
 
 ############################## Load in the SemEval data ##############################
 
-def load_data(file_path, train_val="test", target_size=(384, 384)):
-    """Load the SemEval dataset."""
-    path = os.path.join(file_path, train_val + "_v1")
+def load_data(file_path, train_val="trial", target_size=(384, 384), use_cache=True):
+    """Load in the data
 
-    # Load text data
-    path_data = os.path.join(path, train_val + ".data.v1.txt")
-    data = pd.read_csv(path_data, sep="\t", header=None)
-    data.columns = ["target", "sentence"] + [
-        f"image_{i}" for i in range(data.shape[1] - 2)
-    ]
+    Args:
+        file_path (str): The file path
+        train_val (str): Whether to load in the train, test, or trial set
+        target_size (tuple): The size of each image to use
+            Use (224, 224) for CLIP only, (384, 384) for BLIP
+        use_cache (bool): Whether to use cached images if available
 
-    # Load labels
-    path_labels = os.path.join(path, train_val + ".gold.v1.txt")
-    with open(path_labels, "r") as f:
+    Returns:
+        data (DataFrame): Target, Sentence, image_0-9, label
+        image_dict (dict): Map image name to image
+    """
+    # Train/trial/test set
+    path = os.path.join(file_path, train_val+"_v1")
+    
+    # Cache file path
+    cache_file = os.path.join(path, f"image_cache.pkl")
+
+    # Load in the data
+    path_data = os.path.join(path, train_val+".data.v1.txt")
+    data = pd.read_csv(path_data, sep='\t', header=None)
+    data.columns = ['target', 'sentence'] + [f'image_{i}' for i in range(data.shape[1] - 2)]
+
+    # Load in the labels
+    path_labels = os.path.join(path, train_val+".gold.v1.txt")
+    with open(path_labels, "r") as f: 
         gold_labels = [line.strip() for line in f]
-    data["label"] = gold_labels
+    data['label'] = gold_labels
 
-    # Load images
-    path_images = os.path.join(path, train_val + "_images_v1")
+    # Try to load cached images
+    if use_cache and os.path.exists(cache_file):
+        print(f"Loading cached images from {cache_file}...")
+        with open(cache_file, 'rb') as f:
+            image_dict = pickle.load(f)
+        print(f"Loaded {len(image_dict)} cached images")
+        return data, image_dict
+
+    # Load in the images (first time or if cache disabled)
+    path_images = os.path.join(path, train_val+"_images_v1")
     image_dict = {}
     files = os.listdir(path_images)
-
-    for filename in tqdm(files, total=len(files), desc="Loading Images", unit="image"):
-        if filename.lower().endswith((".jpg", ".png")):
+    for filename in tqdm(files, total=len(files), desc="Loading in the Images", unit="image"):
+        if filename.lower().endswith('.jpg') or filename.lower().endswith('.png'): 
             try:
-                img = Image.open(os.path.join(path_images, filename)).convert("RGB")
-                image_dict[filename] = img
+                img = Image.open(os.path.join(path_images, filename)).convert('RGB')
+                img_resized = img.resize(target_size, resample=Image.BICUBIC)
+                image_dict[filename] = img_resized
             except Exception:
                 continue
+
+    # Save to cache
+    if use_cache:
+        print(f"Saving images to cache: {cache_file}...")
+        with open(cache_file, 'wb') as f:
+            pickle.dump(image_dict, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"Cached {len(image_dict)} images")
 
     return data, image_dict
 
