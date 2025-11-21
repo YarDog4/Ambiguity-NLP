@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 import nltk
 from nltk.corpus import wordnet as wn
-# from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import cosine_similarity
 
 
 
@@ -377,7 +377,7 @@ if __name__ == "__main__":
 
     # Load in the data
     data, image_dict = load_data(
-        file_path=file_path, train_val="test"
+        file_path=file_path, train_val="trial"
     )  # trial is for debugging (use train or test for evaluation)
 
     predicted_ranks = []
@@ -415,9 +415,4 @@ if __name__ == "__main__":
     print(f"MRR: {mrr}")
     print(f"Hit Rate: {hit_rate}")
 
-    # FUTURE WORK
-    # TODO: For choosing the best definition
-    #   - Use POS to filter WordNet synsets
-    #   - Use synonyms or multi-language synsets as in the paper
-    # TODO: Vision-language model variants
-    # TODO: Try using concatenation of sentence + chosen definition as CLIP text query
+
