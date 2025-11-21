@@ -3,18 +3,14 @@ import re
 import torch
 import pandas as pd
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 import matplotlib.pyplot as plt
 import pickle
 
 from tqdm import tqdm
-from transformers import CLIPModel, CLIPProcessor,  MarianMTModel, MarianTokenizer
+from transformers import CLIPModel, CLIPProcessor, MarianMTModel, MarianTokenizer
 import torch.nn.functional as F
-# import nltk
-# from transformers import BertTokenizerFast, BertModel, BlipProcessor, BlipForConditionalGeneration, AutoModelForSequenceClassification
-# from nltk.corpus import wordnet as wn
-# from sklearn.metrics.pairwise import cosine_similarity
-
+from nltk.corpus import wordnet as wn
 
 
 ############################## Load in the SemEval data ##############################
@@ -81,185 +77,283 @@ def load_data(file_path, train_val, target_size=(384, 384), use_cache=True):
     return data, image_dict
 
 
-############################## Get Embeddings ##############################
-
-# def get_ambiguity_score(sentence, text_model=None) -> float:
-#     """
-#     Args:
-#         Sentence: string
-#         text_model: The bert text model (for ambiguity classification)
-    
-#     Return:
-#         prob (float): Pprobability [0,1] that the sentence is ambiguous
-    
-#     """
-#     if text_model is None: text_model = AutoModelForSequenceClassification.from_pretrained("bert-base-uncased")
-#     inputs = tokenizer(sentence, return_tensors="pt", truncation=True, padding=True)
-#     outputs = text_model(**inputs)
-#     probs = torch.softmax(outputs.logits, dim=-1)
-#     return probs[0][1].item()  # probability of "ambiguous"
+############################## Translation Functions ##############################
 
 def get_translator(source_lang="en", target_lang="es"):
-    """Load translation model and tokenizer
-    
-    Args:
-        source_lang (str): Source language code (e.g., 'en')
-        target_lang (str): Target language code (e.g., 'es', 'fr', 'de')
-    
-    Returns:
-        model: Translation model
-        tokenizer: Translation tokenizer
-    """
+    """Load translation model and tokenizer"""
     model_name = f"Helsinki-NLP/opus-mt-{source_lang}-{target_lang}"
     tokenizer = MarianTokenizer.from_pretrained(model_name)
     model = MarianMTModel.from_pretrained(model_name)
     return model, tokenizer
 
-def translate_text(text, trans_model, trans_tokenizer, device="cpu"):
-    """Translate text using MarianMT
+
+############################## Advanced Prompting Functions ##############################
+
+def context_window(sentence: str, target: str, window=5):
+    """Extract context window around target word"""
+    toks = sentence.split()
+    try:
+        i = toks.index(target)
+    except ValueError:
+        return sentence
+    lo, hi = max(0, i - window), min(len(toks), i + window + 1)
+    return " ".join(toks[lo:hi])
+
+def build_text_prompts(target: str, sentence: str):
+    """Builds multiple contextual sentence prompts"""
+    ctx = context_window(sentence, target, window=5)
+    return [
+        sentence,
+        ctx,
+        f"In this sentence, the word '{target}' refers to the correct image: {ctx}",
+        f"A picture that matches the sense of '{target}' in: {ctx}",
+        f"Focus on the meaning of '{target}' here: {ctx}",
+    ]
+
+def synonym_prompts(target):
+    """Generates synonym-based prompts using WordNet"""
+    syns = []
+    for syn in wn.synsets(target):
+        name = syn.name().split('.')[0].replace('_',' ')
+        definition = syn.definition()
+        syns.append(f"a photo of {name}")
+        syns.append(f"an image showing {definition}")
+        if len(syns) >= 5:
+            break
+    return syns[:5]
+
+def build_target_only_prompts(target):
+    """Combine basic 'photo of' prompts with WordNet synonyms"""
+    base = [f"a photo of {target}", f"an image of {target}", f"{target}"]
+    try:
+        return base + synonym_prompts(target)
+    except:
+        return base
+
+def sharp_prompts(target, sentence):
+    """Sharp prompts for re-ranking"""
+    return [
+        f"the intended meaning of '{target}' in: {sentence}",
+        f"correct interpretation of '{target}' here: {sentence}",
+        f"what '{target}' means in context: {sentence}",
+    ]
+
+
+############################## Multilingual Prompting Functions ##############################
+
+def translate_prompts(prompts, trans_model, trans_tokenizer, device, print_translations=False):
+    """Translate a list of prompts to target language"""
+    translated = []
+    for prompt in prompts:
+        inputs = trans_tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        with torch.no_grad():
+            translated_tokens = trans_model.generate(**inputs)
+        trans_text = trans_tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
+        translated.append(trans_text)
+        if print_translations:
+            print(f"    EN: {prompt}")
+            print(f"    ->: {trans_text}")
+    return translated
+
+def build_multilingual_prompts(target, sentence, prompt_type, languages, device, print_translations=False):
+    """Build prompts in multiple languages
     
     Args:
-        text (str): Text to translate
-        trans_model: Translation model
-        trans_tokenizer: Translation tokenizer
-        device (str): Device to use
+        target (str): Target word
+        sentence (str): Sentence
+        prompt_type (str): 'text', 'target', or 'sharp'
+        languages (list): List of language codes
+        device: Device for translation models
+        print_translations (bool): Whether to print translations
         
     Returns:
-        translated (str): Translated text
+        all_prompts (list): Combined prompts from all languages
     """
-    trans_model = trans_model.to(device)
-    inputs = trans_tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    # English prompts
+    if prompt_type == 'text':
+        en_prompts = build_text_prompts(target, sentence)
+    elif prompt_type == 'target':
+        en_prompts = build_target_only_prompts(target)
+    elif prompt_type == 'sharp':
+        en_prompts = sharp_prompts(target, sentence)
+    else:
+        raise ValueError(f"Unknown prompt_type: {prompt_type}")
     
-    with torch.no_grad():
-        translated = trans_model.generate(**inputs)
+    all_prompts = en_prompts.copy()
     
-    return trans_tokenizer.decode(translated[0], skip_special_tokens=True)
-
-def get_multilingual_embeddings(text, languages, clip_processor, clip_model, device=None):
-    """Get embeddings for text in multiple languages and average them"""
-    if device is None:
-        device = next(clip_model.parameters()).device
+    if print_translations:
+        print(f"\n  [{prompt_type.upper()} PROMPTS - English]")
+        for p in en_prompts:
+            print(f"    {p}")
     
-    embeddings = []
-    
-    # Add original English embedding
-    en_emb = get_sentence_embedding(text, tokenizer=clip_processor, model=clip_model)
-    embeddings.append(en_emb)
-    
-    # Cache translation models
-    translation_models = {}
-    
-    # Add embeddings for each translation
+    # Add translations
+    translation_cache = {}
     for lang in languages:
         try:
-            # Load model
-            if lang not in translation_models:
+            # Get or load translation model
+            if lang not in translation_cache:
                 trans_model, trans_tokenizer = get_translator("en", lang)
                 trans_model = trans_model.to(device)
-                translation_models[lang] = (trans_model, trans_tokenizer)
+                translation_cache[lang] = (trans_model, trans_tokenizer)
             else:
-                trans_model, trans_tokenizer = translation_models[lang]
+                trans_model, trans_tokenizer = translation_cache[lang]
             
-            # Translate
-            inputs = trans_tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+            if print_translations:
+                print(f"\n  [{prompt_type.upper()} PROMPTS - {lang.upper()}]")
             
-            with torch.no_grad():
-                translated_tokens = trans_model.generate(**inputs)
-            translated = trans_tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
+            # Translate prompts
+            translated = translate_prompts(en_prompts, trans_model, trans_tokenizer, device, print_translations)
+            all_prompts.extend(translated)
             
-            trans_emb = get_sentence_embedding(translated, tokenizer=clip_processor, model=clip_model)
-            embeddings.append(trans_emb)
-            print(f"  [{lang}] {translated}")
         except Exception as e:
-            print(f"  Warning: Could not translate to {lang}: {e}")
+            print(f"  Warning: Could not translate {prompt_type} prompts to {lang}: {e}")
             continue
     
-    # Average embeddings
-    if len(embeddings) > 1:
-        avg_embedding = torch.stack(embeddings).mean(dim=0)
-        avg_embedding = F.normalize(avg_embedding, p=2, dim=-1)
-        return avg_embedding
-    else:
-        return embeddings[0]
+    return all_prompts
 
-def get_sentence_embedding(text, tokenizer=None, model=None):   # Get an embedding for a definition or sentence
-    """Get the sentence embedding by mean-pooling the last hidden states from BERT
-    
-    If (tokenizer is CLipProc) and (model is ClipModel), reutnr a normalized clip text embeding in the image-text space. 
-    
-    Args:
-        text (str): The input text
-        tokenizer: The tokenizer
-        model: The model
-        
-    Returns:
-        embedding (Tensor): The output embedding
-    """
-    
+
+############################## Get Embeddings ##############################
+
+def get_sentence_embedding(text, tokenizer=None, model=None):
+    """Get the sentence embedding"""
     if isinstance(tokenizer, CLIPProcessor) and isinstance(model, CLIPModel):
         model.eval()
         device = next(model.parameters()).device
         with torch.no_grad():
             inputs = tokenizer(text=[text], return_tensors="pt", padding=True, truncation=True)
             inputs = {k: v.to(device) for k, v in inputs.items()}
-            features = model.get_text_features(**inputs) #(1, d)
+            features = model.get_text_features(**inputs)
             features = F.normalize(features, p=2, dim=-1)
         return features[0]
 
-    
-    # # Fallback
-    # if tokenizer is None: tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')  # Initialize tokenizer and model
-    # if model is None: model = BertModel.from_pretrained('bert-base-uncased')
-    tokens = tokenizer(text, return_tensors='pt')
-    with torch.no_grad():
-        outputs = model(**tokens)
-        last_hidden = outputs.last_hidden_state  # shape: (1, seq_len, hidden_dim)
-        embedding = last_hidden.mean(dim=1)[0]  # Mean-pool across all tokens (dim=1)
-    return embedding
+@torch.no_grad()
+def get_clip_text_embedding_multi(prompts, processor: CLIPProcessor, model: CLIPModel):
+    """Computes and averages CLIP text embeddings for multiple prompts"""
+    device = next(model.parameters()).device
+    inputs = processor(text=prompts, return_tensors="pt", padding=True, truncation=True)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    feats = model.get_text_features(**inputs)  # (M, d)
+    feats = F.normalize(feats, p=2, dim=-1)
+    mean = feats.mean(dim=0, keepdim=True)
+    mean = F.normalize(mean, p=2, dim=-1)  # (1, d)
+    return mean.squeeze(0)  # (d,)
 
+def get_blended_text_embedding(target, sentence, processor, model, alpha=0.7, 
+                                use_translation=False, languages=None, 
+                                print_translations=False):
+    """Creates balanced CLIP text embedding with optional multilingual support
+    
+    Args:
+        target (str): Target word
+        sentence (str): Sentence
+        processor: CLIP processor
+        model: CLIP model
+        alpha (float): Weight for sentence vs target (0-1)
+        use_translation (bool): Whether to use multilingual prompts
+        languages (list): List of language codes
+        print_translations (bool): Whether to print translations
+        
+    Returns:
+        blended embedding (Tensor)
+    """
+    device = next(model.parameters()).device
+    
+    if use_translation and languages:
+        # Build multilingual prompts
+        sent_prompts = build_multilingual_prompts(target, sentence, 'text', languages, device, print_translations)
+        tgt_prompts = build_multilingual_prompts(target, sentence, 'target', languages, device, print_translations)
+    else:
+        # English only prompts
+        sent_prompts = build_text_prompts(target, sentence)
+        tgt_prompts = build_target_only_prompts(target)
+        if print_translations:
+            print(f"\n  [TEXT PROMPTS - English]")
+            for p in sent_prompts:
+                print(f"    {p}")
+            print(f"\n  [TARGET PROMPTS - English]")
+            for p in tgt_prompts:
+                print(f"    {p}")
+    
+    sent_emb = get_clip_text_embedding_multi(sent_prompts, processor, model)
+    tgt_emb = get_clip_text_embedding_multi(tgt_prompts, processor, model)
+    
+    blend = F.normalize(alpha * sent_emb + (1 - alpha) * tgt_emb, p=2, dim=-1)
+    return blend.unsqueeze(0)
+
+def clip_image_feats_with_tta(pil_list, processor, model):
+    """Compute averaged CLIP image features with TTA (original + horizontal flip)"""
+    device = next(model.parameters()).device
+    flipped_imgs = [ImageOps.mirror(img) for img in pil_list]
+    aug_batches = [pil_list, flipped_imgs]
+    feats_accum = None
+
+    for imgs in aug_batches:
+        inputs = processor(images=imgs, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        feats = model.get_image_features(**inputs)
+        feats = F.normalize(feats, p=2, dim=-1)
+        feats_accum = feats if feats_accum is None else feats_accum + feats
+
+    feats_mean = F.normalize(feats_accum / len(aug_batches), p=2, dim=-1)
+    return feats_mean
+
+
+############################## Image Selection ##############################
 
 def choose_image(target, sentence, images, image_dict, 
                  tokenizer=None, model=None, processor=None, blip_model=None, 
-                 use_translation=False, languages=None, print_output=False):
-    """Given a target word, sentence, and a list of candidate images, choose the image that best matches the target word
-
+                 use_translation=False, languages=None, 
+                 use_rerank=True, print_output=False, 
+                 print_translations=False):
+    """Choose the best matching image with advanced prompting and optional translation
+    
     Args:
-        target (str): The target word
-        sentence (str): The sentence
-        images (list): List of the images
-        image_dict (dict): Dictionary that maps image names to the images
-        tokenizer: The tokenizer
-        model: The model
-        processor: The BlipProcessor
-        blip_model: The Blip model
-        use_translation (bool): Whether to use multilingual embeddings
-        languages (list): List of language codes to translate to (e.g., ['es', 'fr', 'de'])
-        print_output: Whether or not to print the output out
-
+        target (str): Target word
+        sentence (str): Sentence
+        images (list): List of image filenames
+        image_dict (dict): Dictionary mapping filenames to PIL images
+        tokenizer: Not used (kept for compatibility)
+        model: CLIP model
+        processor: CLIP processor
+        blip_model: Not used (kept for compatibility)
+        use_translation (bool): Whether to use multilingual prompts
+        languages (list): List of language codes for translation
+        use_rerank (bool): Whether to use sharp prompt re-ranking
+        print_output (bool): Whether to print debug output
+        print_translations (bool): Whether to print all translations
+        
     Returns:
-        ranked_images (list): A list of the images ranked from highest similarity to lowest
-        ranked_captions (list): The corresponding image captions
-        ranked_embs (list): The corresponding caption embeddings
+        ranked_images (list): Images ranked by similarity
+        ranked_captions (list): Placeholder (None)
+        ranked_embs (list): Placeholder (None)
     """
     
     if isinstance(processor, CLIPProcessor) and isinstance(model, CLIPModel):
-    
-        if print_output: print("\nSentence:", sentence, "\nTarget:", target)
+        if print_output or print_translations: 
+            print("\n" + "="*70)
+            print(f"Target: '{target}'")
+            print(f"Sentence: {sentence}")
+            if use_translation and languages:
+                print(f"Using multilingual prompts: {', '.join(languages)}")
         
         device = next(model.parameters()).device
         
-        # Get text embeddings (with or without translation)
-        if use_translation and languages:
-            # print(f"Using multilingual embeddings ({len(languages)} languages):")
-            text_emb = get_multilingual_embeddings(sentence, languages, processor, model, device)
-        else:
-            text_emb = get_sentence_embedding(sentence, tokenizer=processor, model=model)
+        # 1. Get text embeddings with multiple alphas
+        alphas = [0.6, 0.8]
+        embeddings = []
+        for a in alphas:
+            emb = get_blended_text_embedding(
+                target, sentence, processor, model, alpha=a,
+                use_translation=use_translation, languages=languages,
+                print_translations=print_translations
+            )
+            embeddings.append(emb)
         
-        text_emb = text_emb.unsqueeze(0) #(1, d)
+        # 2. Average and normalize
+        text_emb = F.normalize(torch.stack(embeddings).mean(dim=0), p=2, dim=-1)  # (1, d)
         
-        # Get embeddings for each of the images (batching, normalized)
+        # 3. Get image embeddings with TTA
         pil_batch = []
         valid_names = []
         for name in images:
@@ -267,31 +361,47 @@ def choose_image(target, sentence, images, image_dict,
                 pil_batch.append(image_dict[name])
                 valid_names.append(name)
             else:
-                # Keep order consistent even if an image is missing
                 pil_batch.append(Image.new('RGB', (224, 224)))
                 valid_names.append(name)
         
-        #Process in one batch
         with torch.no_grad():
-            inputs = processor(images=pil_batch, return_tensors="pt")
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            img_feats = model.get_image_features(**inputs)   # (N, d)
-            img_feats = F.normalize(img_feats, p=2, dim=-1)
+            img_feats = clip_image_feats_with_tta(pil_batch, processor, model)  # (N, d)
         
-        # Get the cosine similarities (dot product after l2-normalization)
+        # 4. Compute similarities
         sims = (text_emb @ img_feats.T).squeeze(0).detach().cpu().numpy()  # (N,)
         
-        # Get indices of images sorted by similarity (highest first)
+        # 5. Optional re-ranking with sharp prompts
+        if use_rerank:
+            ranked_indices = np.argsort(sims)[::-1].copy()
+            topk = ranked_indices[: min(5, len(ranked_indices))]
+            
+            # Build sharp prompts (multilingual if enabled)
+            if use_translation and languages:
+                if print_translations:
+                    print("\n[SHARP RE-RANKING PROMPTS]")
+                sharp_prompt_list = build_multilingual_prompts(target, sentence, 'sharp', languages, device, print_translations)
+            else:
+                sharp_prompt_list = sharp_prompts(target, sentence)
+                if print_translations:
+                    print(f"\n  [SHARP PROMPTS - English]")
+                    for p in sharp_prompt_list:
+                        print(f"    {p}")
+            
+            sharp_q = get_clip_text_embedding_multi(sharp_prompt_list, processor, model).unsqueeze(0)
+            sharp_sims = (sharp_q @ img_feats[topk].T).squeeze(0).detach().cpu().numpy()
+            
+            # Blend original and sharp similarities
+            beta = 0.5
+            sims[topk] = beta * sims[topk] + (1 - beta) * sharp_sims
+        
+        # 6. Final ranking
         ranked_indices = np.argsort(sims)[::-1]
-        ranked_images = [valid_names[i] for i in ranked_indices]
+        ranked_images = [valid_names[int(i)] for i in ranked_indices]
 
         if print_output:
-            for rank, i in enumerate(ranked_indices):
-                plt.imshow(image_dict[valid_names[i]])
-                plt.title(f"Rank {rank+1} | sim={sims[i]:.4f}\nSentence: {sentence}")
-                plt.axis('off')
-                plt.show()
-            print("Ranked Images:", ranked_images)
+            print(f"\nTop 3 ranked images:")
+            for rank, i in enumerate(ranked_indices[:3]):
+                print(f"  Rank {rank+1}: {valid_names[i]} (similarity: {sims[i]:.4f})")
 
         ranked_captions = [None for _ in ranked_images]
         ranked_embs = [None for _ in ranked_images]
@@ -299,6 +409,7 @@ def choose_image(target, sentence, images, image_dict,
         return ranked_images, ranked_captions, ranked_embs
 
 
+############################## Main Experiments ##############################
 
 if __name__ == "__main__":
     
@@ -307,7 +418,8 @@ if __name__ == "__main__":
     else: device = "cpu"
 
     file_path = "dataset"
-    print_output = False
+    print_output = False  # Set to True to see individual examples
+    print_translations = True  # Set to True to see all translations
 
     # Define the various pretrained models
     model_name = "openai/clip-vit-base-patch32"
@@ -317,36 +429,79 @@ if __name__ == "__main__":
     # Load in the data
     data, image_dict = load_data(file_path=file_path, train_val="test")
 
-    # Experiment configurations
+    # Comprehensive experiment configurations
     experiments = [
-        {"name": "Baseline (English only)", "use_translation": False, "languages": None},
-        {"name": "Spanish", "use_translation": True, "languages": ["es"]},
-        {"name": "French", "use_translation": True, "languages": ["fr"]},
-        {"name": "German", "use_translation": True, "languages": ["de"]},
-        {"name": "Multi (ES+FR+DE)", "use_translation": True, "languages": ["es", "fr", "de"]},
-        {"name": "Multi (ES+FR)", "use_translation": True, "languages": ["es", "fr"]},
+        # Baseline with advanced prompting (no translation)
+        {"name": "Baseline (Advanced Prompting + Rerank)", 
+         "use_translation": False, "languages": None, "use_rerank": True},
+        
+        {"name": "Baseline (Advanced Prompting, No Rerank)", 
+         "use_translation": False, "languages": None, "use_rerank": False},
+        
+        # Single language experiments
+        {"name": "Spanish (All Prompts + Rerank)", 
+         "use_translation": True, "languages": ["es"], "use_rerank": True},
+        
+        {"name": "French (All Prompts + Rerank)", 
+         "use_translation": True, "languages": ["fr"], "use_rerank": True},
+        
+        {"name": "German (All Prompts + Rerank)", 
+         "use_translation": True, "languages": ["de"], "use_rerank": True},
+        
+        # Multi-language experiments with reranking
+        {"name": "Multi ES+FR (All Prompts + Rerank)", 
+         "use_translation": True, "languages": ["es", "fr"], "use_rerank": True},
+        
+        {"name": "Multi ES+DE (All Prompts + Rerank)", 
+         "use_translation": True, "languages": ["es", "de"], "use_rerank": True},
+        
+        {"name": "Multi FR+DE (All Prompts + Rerank)", 
+         "use_translation": True, "languages": ["fr", "de"], "use_rerank": True},
+        
+        {"name": "Multi ES+FR+DE (All Prompts + Rerank)", 
+         "use_translation": True, "languages": ["es", "fr", "de"], "use_rerank": True},
+        
+        # Without re-ranking
+        {"name": "Multi ES+FR (No Rerank)", 
+         "use_translation": True, "languages": ["es", "fr"], "use_rerank": False},
+        
+        {"name": "Multi ES+FR+DE (No Rerank)", 
+         "use_translation": True, "languages": ["es", "fr", "de"], "use_rerank": False},
     ]
 
     results = []
     
     for exp in experiments:
-        print(f"\n{'='*60}")
-        print(f"Running: {exp['name']}")
-        print(f"{'='*60}")
+        print(f"\n{'='*70}")
+        print(f"EXPERIMENT: {exp['name']}")
+        print(f"{'='*70}")
         
         predicted_ranks = []
+        
+        # Only show translations for first example of each experiment
+        show_first = print_translations
+        
         for idx, row in data.iterrows():
             target = row['target']
             sentence = row['sentence']
             images = [row[f'image_{i}'] for i in range(10)]
             label = row['label']
 
+            if label not in image_dict:
+                print(f"Skipping {label} (not found)")
+                continue
+
+            # Show translations only for first example
+            current_print_translations = show_first and idx == 0
+            
             ranked_images, _, _ = choose_image(
                 target, sentence, images, image_dict,
                 tokenizer=None, model=model, processor=tokenizer, blip_model=None,
                 use_translation=exp["use_translation"],
                 languages=exp["languages"],
-                print_output=print_output
+                use_rerank=exp["use_rerank"],
+                print_output=print_output,
+                print_translations=current_print_translations
             )
             
             predicted_rank = ranked_images.index(label) + 1
@@ -367,232 +522,10 @@ if __name__ == "__main__":
         print(f"  Hit Rate: {hit_rate:.4f}")
 
     # Print comparison table
-    print(f"\n{'='*60}")
-    print("RESULTS COMPARISON")
-    print(f"{'='*60}")
-    print(f"{'Experiment':<30} {'MRR':<12} {'Hit Rate':<12}")
-    print("-" * 60)
+    print(f"\n{'='*70}")
+    print("RESULTS COMPARISON - Advanced Prompting + Translation")
+    print(f"{'='*70}")
+    print(f"{'Experiment':<50} {'MRR':<12} {'Hit Rate':<12}")
+    print("-" * 74)
     for r in results:
-        print(f"{r['experiment']:<30} {r['mrr']:<12.4f} {r['hit_rate']:<12.4f}")
-
-
-    # TODO: For choosing the best definition
-        # TODO: Rather than using all WordNet definitions, only use the ones for the correct part of speech
-        # TODO: Use synonyms on the target word and get embeddings from them as well
-        # TODO: Try changing the language of the word and choosing definitions there (as the paper does)
-    # TODO: Vision Language Model to get text embeddings from images
-        # TODO: Get a good dataset for images
-        # TODO: Find best VLM (Clip, maybe something else)
-            # TODO: The current code uses captions generated from Blip
-    # TODO: For the final prediction
-        # TODO: Should we use image captions with context, or embeddings without context?
-        # TODO: Should we clean the captions to remove the given sentence?
-    # TODO: Find a way to determine if we should use the definition embedding, the image embedding, or both to make the prediction
-        # TODO: Maybe we can weight all of them based on ther similarity, using some sort of cross entropy with tempurature
-    
-    
-    
-    
-    
-    
-    
-    
-# def get_context(sentence, target, tokenizer=None, model=None):  # Contextual Embedding with BERT
-#     """Get the contextual embedding for a target word, given the context
-
-#     Args:
-#         sentence (str): The sentence (must contain the target word)
-#         target (str): The targe word
-#         tokenizer: The tokenizer
-#         model: The model
-
-#     Returns:
-#         target_embedding (Tensor): The output embedding
-#     """
-#     if tokenizer is None: tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')  # Initialize tokenizer and model
-#     if model is None: model = BertModel.from_pretrained('bert-base-uncased')
-
-#     # Tokenize sentence (with offsets)
-#     tokens = tokenizer(sentence, return_tensors='pt', return_offsets_mapping=True)
-#     input_ids = tokens['input_ids']
-#     offsets = tokens['offset_mapping'][0]
-#     sentence_token_ids = input_ids[0].tolist()
-
-#     # Tokenize target (without special tokens)
-#     target_token_ids = tokenizer(target, add_special_tokens=False)["input_ids"]
-
-#     # Find the target's token indices in the sentence
-#     def find_sublist_index(big_list, sub_list):
-#         for i in range(len(big_list) - len(sub_list) + 1):
-#             if big_list[i:i+len(sub_list)] == sub_list:
-#                 return list(range(i, i+len(sub_list)))
-#         return []
-
-#     target_indices = find_sublist_index(sentence_token_ids, target_token_ids)
-
-#     if not target_indices:
-#         print(f"Target word '{target}' not found in sentence.")
-#         target_embedding = None
-#     else:
-#         tokens_for_model = {k: v for k, v in tokens.items() if k != "offset_mapping"}  # Remove 'offset_mapping' before passing to model
-#         with torch.no_grad():
-#             outputs = model(**tokens_for_model)   # Get the embeddings by passing it into the neural network
-#             last_hidden = outputs.last_hidden_state  # (batch_size, seq_len, hidden_dim)
-#         target_embedding = last_hidden[0, target_indices, :].mean(dim=0)   # Mean pool embeddings across the matched subword token indices
-
-#     return target_embedding
-
-
-############################## Choose the Best Definitional Embedding ##############################
-
-# def choose_definition(target, context_embedding, tokenizer=None, model=None, print_output=False):
-#     """Given a target word and sentence, choose the definition that best matches it
-
-#     Args:
-#         target (str): The targe word
-#         context_embedding (tensot): The contextual embedding of the target word in its given sentence
-#         tokenizer: The tokenizer
-#         model: The model
-
-#     Returns:
-#         best_syn: The best sense of the word
-#             best_syn.name() is the name of the sense
-#             best_syn.definition() is the chosen definition
-#         best_emb: The chosen dictionary embedding
-#     """
-#     if tokenizer is None: tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')  # Initialize tokenizer and model
-#     if model is None: model = BertModel.from_pretrained('bert-base-uncased')
-
-#     # Get the embeddings for each defintiion
-#     definition_embeddings = []
-#     for syn in wn.synsets(target): 
-#         definition = syn.definition()
-#         # print(syn.name(), ":", definition)
-#         definition_embedding = get_sentence_embedding(definition, tokenizer=tokenizer, model=model)  # Get the embedding for the definition
-#         definition_embeddings.append((syn, definition_embedding))   # Store the sense and definition embedding
-
-#     # Convert to numpy arrays for similarity
-#     context_vec = context_embedding.detach().cpu().numpy().reshape(1, -1)
-#     definition_vecs = [emb.detach().cpu().numpy().reshape(1, -1) for _, emb in definition_embeddings]
-#     definition_vecs_np = np.vstack(definition_vecs)
-
-#     sims = cosine_similarity(context_vec, definition_vecs_np)[0]
-#     best_idx = sims.argmax()
-#     best_syn, best_emb = definition_embeddings[best_idx]
-
-#     if print_output:  # Print cosine similarity, sense, definition
-#         print("The cosine similarities for each definition are:")
-#         for i, syn in enumerate(wn.synsets(target)): 
-#             print(sims[i], syn.name(), ":", syn.definition())
-#         print("Best sense:", best_syn.name())
-#         print("Definition:", best_syn.definition())
-
-#     return best_syn, best_emb
-
-
-############################## Connect Images To Text ##############################
-
-# def generate_caption(image, processor=None, blip_model=None, show_image=False) -> str:
-#     """
-#     Generate a caption for the image using BLIP.
-
-#     Args:
-#         image: The image
-#         processor: The BlipProcessor
-#         blip_model: The Blip model
-#         show_image (bool): Whether or not to show the image
-#     Returns:
-#         caption (str): The Caption
-#     """
-#     if processor is None: processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", use_fast=True)   # Prepares images to be passed into BLIP
-#     if blip_model is None: blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")    # BLIP model for image captioning
-
-#     inputs = processor(images=image, return_tensors="pt")
-#     out = blip_model.generate(**inputs, max_length=20)
-#     caption = processor.decode(out[0], skip_special_tokens=True)
-
-#     if show_image:   # Show the Image With the Caption if Desired
-#         plt.imshow(image)
-#         plt.title("Caption: " + caption)
-#         plt.axis('off')
-#         plt.show()
-
-#     return caption
-
-# def clean_caption(caption, sentence):
-#     """
-#     Clean the caption to remove the original sentence used to give it context
-
-#     Args:
-#         caption (str): The caption
-#         sentence (str): The sentence
-
-#     Return:
-#         cleaned caption (str)
-#     """
-#     # Lowercase for case-insensitive comparison
-#     caption_lower = caption.lower()
-#     sentence_lower = sentence.lower()
-#     words = sentence_lower.split()
-
-#     if not words: return caption
-
-#     escaped = [re.escape(w) for w in words[:-1]]
-#     last_word = re.escape(words[-1])
-
-#     # Pattern to match sentence at beginning, possibly with extra word chars after last word
-#     pattern = r'^' + r'\s+'.join(escaped)
-#     if escaped: pattern += r'\s+'
-#     pattern += last_word + r'\w*'
-
-#     m = re.match(pattern, caption_lower)
-#     if m:
-#         match_len = m.end()
-#         cleaned = caption[match_len:].lstrip()
-
-#         # List of connector prefixes to trim if they appear as whole words at start
-#         prefixes = [',', ';', ':', "at", "with", "from", "by", "in", "as", "and",
-#                     "but", "because", "so", "if", "then", "after", "before", "while",
-#                     "about", "into", "onto", "upon", "on", "of", "for", "to"]
-
-#         # Compile regex pattern for whole-word matching at string start
-#         prefix_pattern = re.compile(r'^(' + '|'.join(re.escape(p) for p in prefixes) + r')\b', re.IGNORECASE)
-
-#         # Remove prefix iteratively if found
-#         while True:
-#             match = prefix_pattern.match(cleaned)
-#             if match: cleaned = cleaned[match.end():].lstrip()
-#             else: break
-
-#         return cleaned
-
-#     return caption
-
-
-# def generate_caption_given_sentence(sentence, image, processor=None, blip_model=None, show_image=False) -> str:   # TODO: Could parallelize this to make it faster
-#     """
-#     Generate a caption for the image using BLIP, given the context sentence
-
-#     Args:
-#         image: The image
-#         processor: The BlipProcessor
-#         blip_model: The Blip model
-#         show_image (bool): Whether or not to show the image
-#     Returns:
-#         cleaned_caption (str): The Cleaned Caption
-#     """
-#     if processor is None: processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", use_fast=True)   # Prepares images to be passed into BLIP
-#     if blip_model is None: blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")    # BLIP model for image captioning
-
-#     inputs = processor(images=image, text=sentence, return_tensors="pt")
-#     out = blip_model.generate(**inputs, max_length=50)
-#     caption = processor.decode(out[0], skip_special_tokens=True)
-#     cleaned_caption = clean_caption(caption, sentence)
-
-#     if show_image:   # Show the Image With the Caption if Desired
-#         plt.imshow(image)
-#         plt.title("Sentence: " + sentence + "\nCaption: " + caption + "\nCleaned Caption: " + cleaned_caption)
-#         plt.axis('off')
-#         plt.show()
-
-#     return cleaned_caption
+        print(f"{r['experiment']:<50} {r['mrr']:<12.4f} {r['hit_rate']:<12.4f}")
