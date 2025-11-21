@@ -1,100 +1,100 @@
-#Image Augmentations
-import os
-import re
-import torch
-import pandas as pd
-import numpy as np
-from PIL import Image, ImageFilter, ImageEnhance
-import matplotlib.pyplot as plt
-import random
-import pickle
-import spacy
-import nltk
-from nltk.corpus import wordnet as wn
-from sklearn.metrics.pairwise import cosine_similarity
-import pickle
+# #Image Augmentations
+# import os
+# import re
+# import torch
+# import pandas as pd
+# import numpy as np
+# from PIL import Image, ImageFilter, ImageEnhance
+# import matplotlib.pyplot as plt
+# import random
+# import pickle
+# import spacy
+# import nltk
+# from nltk.corpus import wordnet as wn
+# from sklearn.metrics.pairwise import cosine_similarity
+# import pickle
 
-from tqdm import tqdm
-from transformers import CLIPModel, CLIPProcessor
-import torch.nn.functional as F
+# from tqdm import tqdm
+# from transformers import CLIPModel, CLIPProcessor
+# import torch.nn.functional as F
 
 
-############################## Load in the SemEval data ##############################
-def spacy_to_wordnet_pos(spacy_pos):
-    if spacy_pos in ['NOUN', 'PROPN']:
-        return wn.NOUN
-    elif spacy_pos == 'VERB':
-        return wn.VERB
-    elif spacy_pos == 'ADJ':
-        return wn.ADJ
-    elif spacy_pos == 'ADV':
-        return wn.ADV
-    else:
-        return None
+# ############################## Load in the SemEval data ##############################
+# def spacy_to_wordnet_pos(spacy_pos):
+#     if spacy_pos in ['NOUN', 'PROPN']:
+#         return wn.NOUN
+#     elif spacy_pos == 'VERB':
+#         return wn.VERB
+#     elif spacy_pos == 'ADJ':
+#         return wn.ADJ
+#     elif spacy_pos == 'ADV':
+#         return wn.ADV
+#     else:
+#         return None
     
-def load_data(file_path, train_val, target_size=(384, 384), use_cache=True):
-    """Load in the data
+# def load_data(file_path, train_val, target_size=(384, 384), use_cache=True):
+#     """Load in the data
 
-    Args:
-        file_path (str): The file path
-        train_val (str): Whether to load in the train, test, or trial set
-        target_size (tuple): The size of each image to use
-            Use (224, 224) for CLIP only, (384, 384) for BLIP
-        use_cache (bool): Whether to use cached images if available
+#     Args:
+#         file_path (str): The file path
+#         train_val (str): Whether to load in the train, test, or trial set
+#         target_size (tuple): The size of each image to use
+#             Use (224, 224) for CLIP only, (384, 384) for BLIP
+#         use_cache (bool): Whether to use cached images if available
 
-    Returns:
-        data (DataFrame): Target, Sentence, image_0-9, label
-        image_dict (dict): Map image name to image
-    """
-    # Train/trial/test set
-    path = os.path.join(file_path, train_val+"_v1")
+#     Returns:
+#         data (DataFrame): Target, Sentence, image_0-9, label
+#         image_dict (dict): Map image name to image
+#     """
+#     # Train/trial/test set
+#     path = os.path.join(file_path, train_val+"_v1")
     
-    # Cache file path
-    cache_file = os.path.join(path, f"image_cache.pkl")
+#     # Cache file path
+#     cache_file = os.path.join(path, f"image_cache.pkl")
 
-    # Load in the data
-    path_data = os.path.join(path, train_val+".data.v1.txt")
-    data = pd.read_csv(path_data, sep='\t', header=None)
-    data.columns = ['target', 'sentence'] + [f'image_{i}' for i in range(data.shape[1] - 2)]
+#     # Load in the data
+#     path_data = os.path.join(path, train_val+".data.v1.txt")
+#     data = pd.read_csv(path_data, sep='\t', header=None)
+#     data.columns = ['target', 'sentence'] + [f'image_{i}' for i in range(data.shape[1] - 2)]
 
-    # Load in the labels
-    path_labels = os.path.join(path, train_val+".gold.v1.txt")
-    with open(path_labels, "r") as f: 
-        gold_labels = [line.strip() for line in f]
-    data['label'] = gold_labels
+#     # Load in the labels
+#     path_labels = os.path.join(path, train_val+".gold.v1.txt")
+#     with open(path_labels, "r") as f: 
+#         gold_labels = [line.strip() for line in f]
+#     data['label'] = gold_labels
 
-    # Try to load cached images
-    if use_cache and os.path.exists(cache_file):
-        print(f"Loading cached images from {cache_file}...")
-        with open(cache_file, 'rb') as f:
-            image_dict = pickle.load(f)
-        print(f"Loaded {len(image_dict)} cached images")
-        return data, image_dict
+#     # Try to load cached images
+#     if use_cache and os.path.exists(cache_file):
+#         print(f"Loading cached images from {cache_file}...")
+#         with open(cache_file, 'rb') as f:
+#             image_dict = pickle.load(f)
+#         print(f"Loaded {len(image_dict)} cached images")
+#         return data, image_dict
 
-    # Load in the images (first time or if cache disabled)
-    path_images = os.path.join(path, train_val+"_images_v1")
-    image_dict = {}
-    files = os.listdir(path_images)
-    for filename in tqdm(files, total=len(files), desc="Loading in the Images", unit="image"):
-        if filename.lower().endswith('.jpg') or filename.lower().endswith('.png'): 
-            try:
-                img = Image.open(os.path.join(path_images, filename)).convert('RGB')
-                img_resized = img.resize(target_size, resample=Image.BICUBIC)
-                image_dict[filename] = img_resized
-            except Exception:
-                continue
+#     # Load in the images (first time or if cache disabled)
+#     path_images = os.path.join(path, train_val+"_images_v1")
+#     image_dict = {}
+#     files = os.listdir(path_images)
+#     for filename in tqdm(files, total=len(files), desc="Loading in the Images", unit="image"):
+#         if filename.lower().endswith('.jpg') or filename.lower().endswith('.png'): 
+#             try:
+#                 img = Image.open(os.path.join(path_images, filename)).convert('RGB')
+#                 img_resized = img.resize(target_size, resample=Image.BICUBIC)
+#                 image_dict[filename] = img_resized
+#             except Exception:
+#                 continue
 
-    # Save to cache
-    if use_cache:
-        print(f"Saving images to cache: {cache_file}...")
-        with open(cache_file, 'wb') as f:
-            pickle.dump(image_dict, f, protocol=pickle.HIGHEST_PROTOCOL)
-        print(f"Cached {len(image_dict)} images")
+#     # Save to cache
+#     if use_cache:
+#         print(f"Saving images to cache: {cache_file}...")
+#         with open(cache_file, 'wb') as f:
+#             pickle.dump(image_dict, f, protocol=pickle.HIGHEST_PROTOCOL)
+#         print(f"Cached {len(image_dict)} images")
 
-    return data, image_dict
+#     return data, image_dict
 
 
-############################## Text Embeddings ##############################
+# ############################## Text Embeddings ##############################
 
 # def get_sentence_embedding(text, tokenizer=None, model=None):
 #     """Get a CLIP text embedding or a fallback transformer embedding."""
@@ -116,272 +116,272 @@ def load_data(file_path, train_val, target_size=(384, 384), use_cache=True):
 #         embedding = last_hidden.mean(dim=1)[0]
 #     return embedding
 
-def get_prompted_text_embeddings(text_list, processor, model):
-    """
-    Generate a CLIP text embedding for each prompt in text_list,
-    then average + normalize.
-    """
-    device = next(model.parameters()).device
-    embs = []
+# # def get_prompted_text_embeddings(text_list, processor, model):
+# #     """
+# #     Generate a CLIP text embedding for each prompt in text_list,
+# #     then average + normalize.
+# #     """
+# #     device = next(model.parameters()).device
+# #     embs = []
 
-    with torch.no_grad():
-        for text in text_list:
-            inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True)
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            feat = model.get_text_features(**inputs)
-            feat = F.normalize(feat, p=2, dim=-1)
-            embs.append(feat[0])
+# #     with torch.no_grad():
+# #         for text in text_list:
+# #             inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True)
+# #             inputs = {k: v.to(device) for k, v in inputs.items()}
+# #             feat = model.get_text_features(**inputs)
+# #             feat = F.normalize(feat, p=2, dim=-1)
+# #             embs.append(feat[0])
 
-    embs = torch.stack(embs)                 # (num_prompts, d)
-    mean_emb = embs.mean(dim=0)              # (d,)
-    mean_emb = F.normalize(mean_emb, p=2, dim=-1)
-    return mean_emb
-
-
-############################## Image Augmentations ##############################
-
-def random_geometric_augment(img: Image.Image) -> Image.Image:
-    """Mild random geometric transforms: flip, rotation, slight zoom/crop."""
-    w, h = img.size
-    out = img
-
-    # Random horizontal flip (50% chance)
-    if random.random() < 0.5:
-        out = out.transpose(Image.FLIP_LEFT_RIGHT)
-
-    # Small random rotation
-    angle = random.uniform(-7, 7)  # degrees
-    out = out.rotate(angle, resample=Image.BICUBIC, expand=False)
-
-    # Slight random crop (95–100% of size)
-    scale = random.uniform(0.95, 1.0)
-    new_w, new_h = int(w * scale), int(h * scale)
-    if new_w < w and new_h < h:
-        left = random.randint(0, w - new_w)
-        top = random.randint(0, h - new_h)
-        out = out.crop((left, top, left + new_w, top + new_h))
-        out = out.resize((w, h), resample=Image.BICUBIC)
-
-    return out
+# #     embs = torch.stack(embs)                 # (num_prompts, d)
+# #     mean_emb = embs.mean(dim=0)              # (d,)
+# #     mean_emb = F.normalize(mean_emb, p=2, dim=-1)
+# #     return mean_emb
 
 
-def random_photometric_augment(img: Image.Image) -> Image.Image:
-    """Mild brightness/contrast/color/blur jitter."""
-    out = img
+# ############################## Image Augmentations ##############################
 
-    # Brightness
-    if random.random() < 0.5:
-        enhancer = ImageEnhance.Brightness(out)
-        factor = random.uniform(0.95, 1.05)
-        out = enhancer.enhance(factor)
+# def random_geometric_augment(img: Image.Image) -> Image.Image:
+#     """Mild random geometric transforms: flip, rotation, slight zoom/crop."""
+#     w, h = img.size
+#     out = img
 
-    # Contrast
-    if random.random() < 0.5:
-        enhancer = ImageEnhance.Contrast(out)
-        factor = random.uniform(0.95, 1.05)
-        out = enhancer.enhance(factor)
+#     # Random horizontal flip (50% chance)
+#     if random.random() < 0.5:
+#         out = out.transpose(Image.FLIP_LEFT_RIGHT)
 
-    # Color
-    if random.random() < 0.5:
-        enhancer = ImageEnhance.Color(out)
-        factor = random.uniform(0.95, 1.05)
-        out = enhancer.enhance(factor)
+#     # Small random rotation
+#     angle = random.uniform(-7, 7)  # degrees
+#     out = out.rotate(angle, resample=Image.BICUBIC, expand=False)
 
-    # Slight blur (very mild)
-    if random.random() < 0.3:
-        out = out.filter(ImageFilter.GaussianBlur(radius=0.3))
+#     # Slight random crop (95–100% of size)
+#     scale = random.uniform(0.95, 1.0)
+#     new_w, new_h = int(w * scale), int(h * scale)
+#     if new_w < w and new_h < h:
+#         left = random.randint(0, w - new_w)
+#         top = random.randint(0, h - new_h)
+#         out = out.crop((left, top, left + new_w, top + new_h))
+#         out = out.resize((w, h), resample=Image.BICUBIC)
 
-    return out
+#     return out
 
 
-def generate_tta_views(img: Image.Image,
-                       num_random_augs: int = 3,
-                       out_size=(224, 224)) -> list[Image.Image]:
-    """
-    Strong TTA for CLIP:
-    - original
-    - horizontal flip
-    - center crop
-    - zoomed center
-    - grayscale
-    - a few random geometric+photometric augmentations
-    """
-    views = []
-    w, h = img.size
+# def random_photometric_augment(img: Image.Image) -> Image.Image:
+#     """Mild brightness/contrast/color/blur jitter."""
+#     out = img
 
-    # Base resized view
-    base = img.resize(out_size, resample=Image.BICUBIC)
-    views.append(base)
+#     # Brightness
+#     if random.random() < 0.5:
+#         enhancer = ImageEnhance.Brightness(out)
+#         factor = random.uniform(0.95, 1.05)
+#         out = enhancer.enhance(factor)
 
-    # Horizontal flip
-    hflip = img.transpose(Image.FLIP_LEFT_RIGHT).resize(out_size, resample=Image.BICUBIC)
-    views.append(hflip)
+#     # Contrast
+#     if random.random() < 0.5:
+#         enhancer = ImageEnhance.Contrast(out)
+#         factor = random.uniform(0.95, 1.05)
+#         out = enhancer.enhance(factor)
 
-    # Center crop (80%)
-    crop_scale = 0.8
-    cw, ch = int(w * crop_scale), int(h * crop_scale)
-    left = (w - cw) // 2
-    top = (h - ch) // 2
-    center_crop = img.crop((left, top, left + cw, top + ch))
-    center_crop = center_crop.resize(out_size, resample=Image.BICUBIC)
-    views.append(center_crop)
+#     # Color
+#     if random.random() < 0.5:
+#         enhancer = ImageEnhance.Color(out)
+#         factor = random.uniform(0.95, 1.05)
+#         out = enhancer.enhance(factor)
 
-    # Zoomed center (60%)
-    zoom_scale = 0.6
-    zw, zh = int(w * zoom_scale), int(h * zoom_scale)
-    zleft = (w - zw) // 2
-    ztop = (h - zh) // 2
-    zoom_crop = img.crop((zleft, ztop, zleft + zw, ztop + zh))
-    zoom_crop = zoom_crop.resize(out_size, resample=Image.BICUBIC)
-    views.append(zoom_crop)
+#     # Slight blur (very mild)
+#     if random.random() < 0.3:
+#         out = out.filter(ImageFilter.GaussianBlur(radius=0.3))
 
-    # Grayscale variant
-    gray = img.convert("L").convert("RGB").resize(out_size, resample=Image.BICUBIC)
-    views.append(gray)
-
-    # A few random augmentations (geometric + photometric)
-    for _ in range(num_random_augs):
-        aug = random_geometric_augment(img)
-        aug = random_photometric_augment(aug)
-        aug = aug.resize(out_size, resample=Image.BICUBIC)
-        views.append(aug)
-
-    return views
+#     return out
 
 
-def multi_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Image]:
-    """Center + four corners + zoomed center (multi-crop)."""
-    w, h = img.size
-    crops = []
+# def generate_tta_views(img: Image.Image,
+#                        num_random_augs: int = 3,
+#                        out_size=(224, 224)) -> list[Image.Image]:
+#     """
+#     Strong TTA for CLIP:
+#     - original
+#     - horizontal flip
+#     - center crop
+#     - zoomed center
+#     - grayscale
+#     - a few random geometric+photometric augmentations
+#     """
+#     views = []
+#     w, h = img.size
 
-    # Main center crop (80%)
-    crop_w, crop_h = int(w * 0.8), int(h * 0.8)
-    crop_w = max(1, crop_w)
-    crop_h = max(1, crop_h)
+#     # Base resized view
+#     base = img.resize(out_size, resample=Image.BICUBIC)
+#     views.append(base)
 
-    # Center
-    left = (w - crop_w) // 2
-    top = (h - crop_h) // 2
-    center = img.crop((left, top, left + crop_w, top + crop_h))
-    crops.append(center.resize(out_size, resample=Image.BICUBIC))
+#     # Horizontal flip
+#     hflip = img.transpose(Image.FLIP_LEFT_RIGHT).resize(out_size, resample=Image.BICUBIC)
+#     views.append(hflip)
 
-    # Top-left
-    tl = img.crop((0, 0, crop_w, crop_h))
-    crops.append(tl.resize(out_size, resample=Image.BICUBIC))
+#     # Center crop (80%)
+#     crop_scale = 0.8
+#     cw, ch = int(w * crop_scale), int(h * crop_scale)
+#     left = (w - cw) // 2
+#     top = (h - ch) // 2
+#     center_crop = img.crop((left, top, left + cw, top + ch))
+#     center_crop = center_crop.resize(out_size, resample=Image.BICUBIC)
+#     views.append(center_crop)
 
-    # Top-right
-    tr = img.crop((w - crop_w, 0, w, crop_h))
-    crops.append(tr.resize(out_size, resample=Image.BICUBIC))
+#     # Zoomed center (60%)
+#     zoom_scale = 0.6
+#     zw, zh = int(w * zoom_scale), int(h * zoom_scale)
+#     zleft = (w - zw) // 2
+#     ztop = (h - zh) // 2
+#     zoom_crop = img.crop((zleft, ztop, zleft + zw, ztop + zh))
+#     zoom_crop = zoom_crop.resize(out_size, resample=Image.BICUBIC)
+#     views.append(zoom_crop)
 
-    # Bottom-left
-    bl = img.crop((0, h - crop_h, crop_w, h))
-    crops.append(bl.resize(out_size, resample=Image.BICUBIC))
+#     # Grayscale variant
+#     gray = img.convert("L").convert("RGB").resize(out_size, resample=Image.BICUBIC)
+#     views.append(gray)
 
-    # Bottom-right
-    br = img.crop((w - crop_w, h - crop_h, w, h))
-    crops.append(br.resize(out_size, resample=Image.BICUBIC))
+#     # A few random augmentations (geometric + photometric)
+#     for _ in range(num_random_augs):
+#         aug = random_geometric_augment(img)
+#         aug = random_photometric_augment(aug)
+#         aug = aug.resize(out_size, resample=Image.BICUBIC)
+#         views.append(aug)
 
-    # Zoomed-in center (60%)
-    zoom_scale = 0.6
-    z_w, z_h = int(w * zoom_scale), int(h * zoom_scale)
-    z_left = (w - z_w) // 2
-    z_top = (h - z_h) // 2
-    zoom_center = img.crop((z_left, z_top, z_left + z_w, z_top + z_h))
-    crops.append(zoom_center.resize(out_size, resample=Image.BICUBIC))
-
-    return crops
-
-
-def grid_patches(img: Image.Image, grid_size=3, out_size=(224, 224)) -> list[Image.Image]:
-    """Split the image into a grid (e.g., 3x3) and return patches."""
-    w, h = img.size
-    patch_w = w // grid_size
-    patch_h = h // grid_size
-
-    patches = []
-    for gy in range(grid_size):
-        for gx in range(grid_size):
-            left = gx * patch_w
-            top = gy * patch_h
-            right = w if gx == grid_size - 1 else (left + patch_w)
-            bottom = h if gy == grid_size - 1 else (top + patch_h)
-
-            patch = img.crop((left, top, right, bottom))
-            patches.append(patch.resize(out_size, resample=Image.BICUBIC))
-
-    return patches
+#     return views
 
 
-def center_saliency_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Image]:
-    """
-    Lightweight 'saliency-like' center crops: smaller crops around the center.
-    Not true saliency, but emphasizes likely subject region.
-    """
-    w, h = img.size
-    crops = []
+# def multi_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Image]:
+#     """Center + four corners + zoomed center (multi-crop)."""
+#     w, h = img.size
+#     crops = []
 
-    for scale in [0.7, 0.5]:
-        cw, ch = int(w * scale), int(h * scale)
-        left = (w - cw) // 2
-        top = (h - ch) // 2
-        crop = img.crop((left, top, left + cw, top + ch))
-        crops.append(crop.resize(out_size, resample=Image.BICUBIC))
+#     # Main center crop (80%)
+#     crop_w, crop_h = int(w * 0.8), int(h * 0.8)
+#     crop_w = max(1, crop_w)
+#     crop_h = max(1, crop_h)
 
-    return crops
+#     # Center
+#     left = (w - crop_w) // 2
+#     top = (h - crop_h) // 2
+#     center = img.crop((left, top, left + crop_w, top + crop_h))
+#     crops.append(center.resize(out_size, resample=Image.BICUBIC))
+
+#     # Top-left
+#     tl = img.crop((0, 0, crop_w, crop_h))
+#     crops.append(tl.resize(out_size, resample=Image.BICUBIC))
+
+#     # Top-right
+#     tr = img.crop((w - crop_w, 0, w, crop_h))
+#     crops.append(tr.resize(out_size, resample=Image.BICUBIC))
+
+#     # Bottom-left
+#     bl = img.crop((0, h - crop_h, crop_w, h))
+#     crops.append(bl.resize(out_size, resample=Image.BICUBIC))
+
+#     # Bottom-right
+#     br = img.crop((w - crop_w, h - crop_h, w, h))
+#     crops.append(br.resize(out_size, resample=Image.BICUBIC))
+
+#     # Zoomed-in center (60%)
+#     zoom_scale = 0.6
+#     z_w, z_h = int(w * zoom_scale), int(h * zoom_scale)
+#     z_left = (w - z_w) // 2
+#     z_top = (h - z_h) // 2
+#     zoom_center = img.crop((z_left, z_top, z_left + z_w, z_top + z_h))
+#     crops.append(zoom_center.resize(out_size, resample=Image.BICUBIC))
+
+#     return crops
 
 
-def get_image_embedding(img: Image.Image,
-                        processor: CLIPProcessor,
-                        model: CLIPModel,
-                        temp: float = 0.7,
-                        out_size=(224, 224)) -> torch.Tensor:
-    """
-    Build a rich multi-view embedding:
-    - Strong TTA views
-    - Multi-crops (center + corners + zoomed)
-    - Grid patches
-    - Center-focused crops
-    Then:
-    - Batch all views through CLIP
-    - Average features
-    - Normalize + temperature scale
-    """
-    model.eval()
-    device = next(model.parameters()).device
+# def grid_patches(img: Image.Image, grid_size=3, out_size=(224, 224)) -> list[Image.Image]:
+#     """Split the image into a grid (e.g., 3x3) and return patches."""
+#     w, h = img.size
+#     patch_w = w // grid_size
+#     patch_h = h // grid_size
 
-    # Collect all views
-    views = []
-    views.extend(generate_tta_views(img, num_random_augs=3, out_size=out_size))
-    views.extend(multi_crops(img, out_size=out_size))
-    views.extend(grid_patches(img, grid_size=3, out_size=out_size))
-    views.extend(center_saliency_crops(img, out_size=out_size))
+#     patches = []
+#     for gy in range(grid_size):
+#         for gx in range(grid_size):
+#             left = gx * patch_w
+#             top = gy * patch_h
+#             right = w if gx == grid_size - 1 else (left + patch_w)
+#             bottom = h if gy == grid_size - 1 else (top + patch_h)
 
-    with torch.no_grad():
-        inputs = processor(images=views, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+#             patch = img.crop((left, top, right, bottom))
+#             patches.append(patch.resize(out_size, resample=Image.BICUBIC))
 
-        # If on GPU, use autocast for speed
-        use_amp = (device.type == "cuda") if isinstance(device, torch.device) else False
-        if hasattr(torch.cuda, "amp"):
-            ctx = torch.cuda.amp.autocast(enabled=use_amp)
-        else:
-            # Fallback if amp not available
-            class DummyCtx:
-                def __enter__(self): return None
-                def __exit__(self, exc_type, exc_val, exc_tb): return False
-            ctx = DummyCtx()
+#     return patches
 
-        with ctx:
-            feats = model.get_image_features(**inputs)  # (N, d)
 
-        feats = F.normalize(feats, p=2, dim=-1)
-        feat_mean = feats.mean(dim=0)  # (d,)
+# def center_saliency_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Image]:
+#     """
+#     Lightweight 'saliency-like' center crops: smaller crops around the center.
+#     Not true saliency, but emphasizes likely subject region.
+#     """
+#     w, h = img.size
+#     crops = []
 
-        # Temperature scaling sharpens cosine similarities
-        feat_scaled = feat_mean / temp
-        feat_final = F.normalize(feat_scaled, p=2, dim=-1)
+#     for scale in [0.7, 0.5]:
+#         cw, ch = int(w * scale), int(h * scale)
+#         left = (w - cw) // 2
+#         top = (h - ch) // 2
+#         crop = img.crop((left, top, left + cw, top + ch))
+#         crops.append(crop.resize(out_size, resample=Image.BICUBIC))
 
-    return feat_final
+#     return crops
+
+
+# def get_image_embedding(img: Image.Image,
+#                         processor: CLIPProcessor,
+#                         model: CLIPModel,
+#                         temp: float = 0.7,
+#                         out_size=(224, 224)) -> torch.Tensor:
+#     """
+#     Build a rich multi-view embedding:
+#     - Strong TTA views
+#     - Multi-crops (center + corners + zoomed)
+#     - Grid patches
+#     - Center-focused crops
+#     Then:
+#     - Batch all views through CLIP
+#     - Average features
+#     - Normalize + temperature scale
+#     """
+#     model.eval()
+#     device = next(model.parameters()).device
+
+#     # Collect all views
+#     views = []
+#     views.extend(generate_tta_views(img, num_random_augs=3, out_size=out_size))
+#     views.extend(multi_crops(img, out_size=out_size))
+#     views.extend(grid_patches(img, grid_size=3, out_size=out_size))
+#     views.extend(center_saliency_crops(img, out_size=out_size))
+
+#     with torch.no_grad():
+#         inputs = processor(images=views, return_tensors="pt")
+#         inputs = {k: v.to(device) for k, v in inputs.items()}
+
+#         # If on GPU, use autocast for speed
+#         use_amp = (device.type == "cuda") if isinstance(device, torch.device) else False
+#         if hasattr(torch.cuda, "amp"):
+#             ctx = torch.cuda.amp.autocast(enabled=use_amp)
+#         else:
+#             # Fallback if amp not available
+#             class DummyCtx:
+#                 def __enter__(self): return None
+#                 def __exit__(self, exc_type, exc_val, exc_tb): return False
+#             ctx = DummyCtx()
+
+#         with ctx:
+#             feats = model.get_image_features(**inputs)  # (N, d)
+
+#         feats = F.normalize(feats, p=2, dim=-1)
+#         feat_mean = feats.mean(dim=0)  # (d,)
+
+#         # Temperature scaling sharpens cosine similarities
+#         feat_scaled = feat_mean / temp
+#         feat_final = F.normalize(feat_scaled, p=2, dim=-1)
+
+#     return feat_final
 
 # def choose_definition(target, sentence, tokenizer=None, model=None, print_output=False, ner=None, filter_for_pos=True):
 #     """
@@ -477,136 +477,136 @@ def get_image_embedding(img: Image.Image,
 
 #     return best_syn, best_emb, context_embedding
 
-def choose_definition_prompted(
-    target,
-    sentence,
-    tokenizer,
-    model,
-    ner=None,
-    filter_for_pos=True,
-    print_output=False
-):
-    """
-    Uses:
-    - WordNet synsets
-    - spaCy POS filtering
-    - PROMPTED CLIP embeddings for definitions
-    - Multiple prompt templates
-    """
+# # def choose_definition_prompted(
+# #     target,
+# #     sentence,
+# #     tokenizer,
+# #     model,
+# #     ner=None,
+# #     filter_for_pos=True,
+# #     print_output=False
+# # ):
+# #     """
+# #     Uses:
+# #     - WordNet synsets
+# #     - spaCy POS filtering
+# #     - PROMPTED CLIP embeddings for definitions
+# #     - Multiple prompt templates
+# #     """
 
-    # Load spaCy if needed
-    if ner is None:
-        ner = spacy.load("en_core_web_sm")
+# #     # Load spaCy if needed
+# #     if ner is None:
+# #         ner = spacy.load("en_core_web_sm")
 
-    # Clean inputs
-    if target is None or str(target).strip() == "":
-        return None, None, get_prompted_text_embeddings(sentence, tokenizer, model)
+# #     # Clean inputs
+# #     if target is None or str(target).strip() == "":
+# #         return None, None, get_prompted_text_embeddings(sentence, tokenizer, model)
 
-    if not isinstance(sentence, str):
-        sentence = str(sentence)
+# #     if not isinstance(sentence, str):
+# #         sentence = str(sentence)
 
-    # Basic context embedding (will be prompted later)
-    context_emb = get_prompted_text_embeddings(sentence, tokenizer, model)
-    context_emb = F.normalize(context_emb, p=2, dim=-1)
+# #     # Basic context embedding (will be prompted later)
+# #     context_emb = get_prompted_text_embeddings(sentence, tokenizer, model)
+# #     context_emb = F.normalize(context_emb, p=2, dim=-1)
 
-    # Get synsets
-    synsets = wn.synsets(target)
-    if not synsets:
-        return None, context_emb, context_emb
+# #     # Get synsets
+# #     synsets = wn.synsets(target)
+# #     if not synsets:
+# #         return None, context_emb, context_emb
 
-    # POS filtering
-    doc = ner(sentence)
-    pos = None
-    for tok in doc:
-        if tok.text.lower() == target.lower():
-            pos = tok.pos_
-            break
+# #     # POS filtering
+# #     doc = ner(sentence)
+# #     pos = None
+# #     for tok in doc:
+# #         if tok.text.lower() == target.lower():
+# #             pos = tok.pos_
+# #             break
 
-    wn_pos = spacy_to_wordnet_pos(pos)
-    if filter_for_pos and wn_pos is not None:
-        filtered = [s for s in synsets if s.pos() == wn_pos]
-        if len(filtered) == 0:
-            filtered = synsets
-    else:
-        filtered = synsets
+# #     wn_pos = spacy_to_wordnet_pos(pos)
+# #     if filter_for_pos and wn_pos is not None:
+# #         filtered = [s for s in synsets if s.pos() == wn_pos]
+# #         if len(filtered) == 0:
+# #             filtered = synsets
+# #     else:
+# #         filtered = synsets
 
-    # PROMPTED definition embeddings
-    def_embs = []
-    for syn in filtered:
-        definition = syn.definition()
+# #     # PROMPTED definition embeddings
+# #     def_embs = []
+# #     for syn in filtered:
+# #         definition = syn.definition()
 
-        # Multi-prompt ensemble
-        prompts = [
-            f"In this sentence: '{sentence}', the word '{target}' means: {definition}.",
-            f"The meaning of '{target}' in this context is: {definition}.",
-            f"A photo showing the meaning '{definition}' of '{target}' in: {sentence}.",
-            f"Depict visually the sense '{definition}' for the word '{target}'.",
-        ]
+# #         # Multi-prompt ensemble
+# #         prompts = [
+# #             f"In this sentence: '{sentence}', the word '{target}' means: {definition}.",
+# #             f"The meaning of '{target}' in this context is: {definition}.",
+# #             f"A photo showing the meaning '{definition}' of '{target}' in: {sentence}.",
+# #             f"Depict visually the sense '{definition}' for the word '{target}'.",
+# #         ]
 
-        emb = get_prompted_text_embeddings(prompts, tokenizer, model)
-        def_embs.append((syn, emb))
+# #         emb = get_prompted_text_embeddings(prompts, tokenizer, model)
+# #         def_embs.append((syn, emb))
 
-    # Compare to context
-    mat = torch.stack([emb for (_, emb) in def_embs], dim=0)
-    sims = torch.matmul(mat, context_emb)
+# #     # Compare to context
+# #     mat = torch.stack([emb for (_, emb) in def_embs], dim=0)
+# #     sims = torch.matmul(mat, context_emb)
 
-    best_idx = sims.argmax().item()
-    best_syn, best_emb = def_embs[best_idx]
+# #     best_idx = sims.argmax().item()
+# #     best_syn, best_emb = def_embs[best_idx]
 
-    return best_syn, best_emb, context_emb
+# #     return best_syn, best_emb, context_emb
 
-def build_final_text_embedding(
-    target,
-    sentence,
-    best_syn,
-    best_definition_emb,
-    context_emb,
-    processor,
-    model,
-    ner=None,
-    embedding_weights=[0.4, 0.4, 0.2],   # syn, context, keywords
-):
-    """
-    Builds the FINAL text embedding using:
-    - Synset definition prompt
-    - Context prompt
-    - Keyword prompt (important nouns/verbs)
-    - Weighted fusion
-    """
+# def build_final_text_embedding(
+#     target,
+#     sentence,
+#     best_syn,
+#     best_definition_emb,
+#     context_emb,
+#     processor,
+#     model,
+#     ner=None,
+#     embedding_weights=[0.85, 0.15],   # syn, context, keywords
+# ):
+#     """
+#     Builds the FINAL text embedding using:
+#     - Synset definition prompt
+#     - Context prompt
+#     - Keyword prompt (important nouns/verbs)
+#     - Weighted fusion
+#     """
 
-    if ner is None:
-        ner = spacy.load("en_core_web_sm")
+#     if ner is None:
+#         ner = spacy.load("en_core_web_sm")
 
-    # Extract keywords
-    doc = ner(sentence)
-    keywords = " ".join([tok.text for tok in doc if tok.pos_ in ["NOUN", "VERB", "ADJ"]])
-    if keywords.strip() == "":
-        keywords = target
+#     # Extract keywords
+#     doc = ner(sentence)
+#     keywords = " ".join([tok.text for tok in doc if tok.pos_ in ["NOUN", "VERB", "ADJ"]])
+#     if keywords.strip() == "":
+#         keywords = target
 
-    # Build multiple final prompts
-    final_prompts = [
-        f"Select an image that shows the meaning of '{target}' as '{best_syn.definition()}' in this sentence: '{sentence}'.",
-        f"A photo representing the sense '{best_syn.definition()}' of the word '{target}'.",
-        f"An image illustrating the usage of '{target}' meaning '{best_syn.definition()}' in context.",
-        f"Important visual concepts: {keywords}. Choose an image matching this meaning.",
-    ]
+#     # Build multiple final prompts
+#     final_prompts = [
+#         f"Select an image that shows the meaning of '{target}' as '{best_syn.definition()}' in this sentence: '{sentence}'.",
+#         f"A photo representing the sense '{best_syn.definition()}' of the word '{target}'.",
+#         f"An image illustrating the usage of '{target}' meaning '{best_syn.definition()}' in context.",
+#         f"Important visual concepts: {keywords}. Choose an image matching this meaning.",
+#     ]
 
-    final_prompt_emb = get_prompted_text_embeddings(final_prompts, processor, model)
+#     final_prompt_emb = get_sentence_embedding(final_prompts, processor, model)
 
-    # Weighted fusion
-    syn_w, ctx_w, kw_w = embedding_weights
+#     # Weighted fusion
+#     syn_w, ctx_w, kw_w = embedding_weights
 
-    final = (
-        syn_w * best_definition_emb +
-        ctx_w * context_emb +
-        kw_w * final_prompt_emb
-    )
+#     final = (
+#         syn_w * best_definition_emb +
+#         ctx_w * context_emb +
+#         kw_w * final_prompt_emb
+#     )
 
-    final = F.normalize(final, p=2, dim=-1)
-    return final.unsqueeze(0)    # (1, d)
+#     final = F.normalize(final, p=2, dim=-1)
+#     return final.unsqueeze(0)    # (1, d)
 
 
-############################## Choosing Images ##############################
+# ############################## Choosing Images ##############################
 
 # def choose_image(target, sentence, images, image_dict, tokenizer=None, model=None, processor=None,
 #     blip_model=None, ner=None, filter_for_pos=True, embedding_weights=[0.5, 0.5], print_output=False):
@@ -633,7 +633,7 @@ def build_final_text_embedding(
 #         print("\nSentence:", sentence)
 #         print("Target:", target)
 
-#     best_syn, best_definition_emb, context_emb = choose_definition_prompted(
+#     best_syn, best_definition_emb, context_emb = choose_definition(
 #         target,
 #         sentence,
 #         tokenizer=processor,     # CLIPProcessor
@@ -701,132 +701,58 @@ def build_final_text_embedding(
 
 #     return ranked_images, ranked_captions, ranked_embs
 
-def choose_image(
-    target,
-    sentence,
-    images,
-    image_dict,
-    tokenizer=None,
-    model=None,
-    processor=None,
-    blip_model=None,
-    ner=None,
-    filter_for_pos=True,
-    embedding_weights=[0.4, 0.4, 0.2],
-    print_output=False
-):
-    if ner is None:
-        ner = spacy.load("en_core_web_sm")
 
-    device = next(model.parameters()).device
+# ############################## Main ##############################
 
-    # 1. Prompted WSD
-    best_syn, best_def_emb, context_emb = choose_definition_prompted(
-        target,
-        sentence,
-        tokenizer=processor,
-        model=model,
-        print_output=print_output,
-        ner=ner,
-        filter_for_pos=filter_for_pos
-    )
+# if __name__ == "__main__":
 
-    # 2. If WSD fails → fallback to context prompt only
-    if best_syn is None:
-        text_emb = context_emb.unsqueeze(0)
-    else:
-        text_emb = build_final_text_embedding(
-            target,
-            sentence,
-            best_syn,
-            best_def_emb,
-            context_emb,
-            processor,
-            model,
-            ner=ner,
-            embedding_weights=embedding_weights
-        )
+#     if torch.backends.mps.is_available():
+#         device = torch.device("mps")
+#     elif torch.cuda.is_available():
+#         device = torch.device("cuda")
+#     else:
+#         device = torch.device("cpu")
 
-    # 3. Compute image embeddings
-    img_embs = []
-    valid_names = []
+#     file_path = "dataset"
+#     print_output = False
 
-    for name in images:
-        valid_names.append(name)
+#     # Download WordNet data if needed
+#     nltk.download("wordnet", quiet=True)
+#     nltk.download("omw-1.4", quiet=True)
 
-        if name not in image_dict:
-            d = model.config.projection_dim
-            img_embs.append(torch.zeros(d, device=device))
-            continue
-
-        img = image_dict[name]
-        emb = get_image_embedding(img, processor=processor, model=model, temp=0.7)
-        img_embs.append(emb)
-
-    img_feats = torch.stack(img_embs, dim=0)
-
-    # 4. Ranking
-    sims = (text_emb @ img_feats.T).squeeze(0).detach().cpu().numpy()
-    ranked_idx = np.argsort(sims)[::-1]
-    ranked_imgs = [valid_names[i] for i in ranked_idx]
-
-    if print_output:
-        print("Ranked:", ranked_imgs)
-
-    return ranked_imgs, [None]*len(ranked_imgs), [None]*len(ranked_imgs)
+#     model_name = "openai/clip-vit-base-patch32"
+#     processor = CLIPProcessor.from_pretrained(model_name)
+#     model = CLIPModel.from_pretrained(model_name).to(device)
+#     ner = spacy.load('en_core_web_sm')
 
 
-############################## Main ##############################
+#     data, image_dict = load_data(file_path=file_path, train_val="trial")
 
-if __name__ == "__main__":
+#     predicted_ranks = []
+#     for idx, row in data.iterrows():
+#         target = row['target']
+#         sentence = row['sentence']
+#         images = [row[f'image_{i}'] for i in range(10)]
+#         label = row['label']
 
-    if torch.backends.mps.is_available():
-        device = torch.device("mps")
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
+#         ranked_images, ranked_captions, ranked_embs = choose_image(
+#             target, sentence, images, image_dict,
+#             tokenizer=None, model=model, processor=processor,
+#             blip_model=None, ner=ner, filter_for_pos=False, 
+#             embedding_weights=[0.85, 0.15], print_output=print_output, 
+#         )
 
-    file_path = "dataset"
-    print_output = False
+#         predicted_rank = ranked_images.index(label) + 1
+#         print("Predicted Rank:", predicted_rank)
+#         predicted_ranks.append(predicted_rank)
 
-    # Download WordNet data if needed
-    nltk.download("wordnet", quiet=True)
-    nltk.download("omw-1.4", quiet=True)
+#     predicted_ranks = np.array(predicted_ranks)
+#     mrr = np.mean(1 / predicted_ranks)
+#     hit_rate = np.sum(predicted_ranks == 1) / len(predicted_ranks)
 
-    model_name = "openai/clip-vit-base-patch32"
-    processor = CLIPProcessor.from_pretrained(model_name)
-    model = CLIPModel.from_pretrained(model_name).to(device)
-    ner = spacy.load('en_core_web_sm')
-
-
-    data, image_dict = load_data(file_path=file_path, train_val="test")
-
-    predicted_ranks = []
-    for idx, row in data.iterrows():
-        target = row['target']
-        sentence = row['sentence']
-        images = [row[f'image_{i}'] for i in range(10)]
-        label = row['label']
-
-        ranked_images, ranked_captions, ranked_embs = choose_image(
-            target, sentence, images, image_dict,
-            tokenizer=None, model=model, processor=processor,
-            blip_model=None, ner=ner, filter_for_pos=False, 
-            embedding_weights=[0.4, 0.4 ,0.2], print_output=print_output, 
-        )
-
-        predicted_rank = ranked_images.index(label) + 1
-        print("Predicted Rank:", predicted_rank)
-        predicted_ranks.append(predicted_rank)
-
-    predicted_ranks = np.array(predicted_ranks)
-    mrr = np.mean(1 / predicted_ranks)
-    hit_rate = np.sum(predicted_ranks == 1) / len(predicted_ranks)
-
-    print("---------------------------------")
-    print(f"MRR: {mrr}")
-    print(f"Hit Rate: {hit_rate}")
+#     print("---------------------------------")
+#     print(f"MRR: {mrr}")
+#     print(f"Hit Rate: {hit_rate}")
 
     
 # ============================================
