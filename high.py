@@ -1,86 +1,107 @@
-# Dual-channel text ensemble + rich image augmentation + quadrant crops
-
 import os
+import random
 import torch
 import pandas as pd
 import numpy as np
 from PIL import Image, ImageFilter, ImageEnhance
 import matplotlib.pyplot as plt
-import random
-import nltk
-import pickle
-from nltk.corpus import wordnet as wn
 
 from tqdm import tqdm
 from transformers import CLIPModel, CLIPProcessor
 import torch.nn.functional as F
+import spacy
+from nltk.corpus import wordnet as wn
 
 
-############################## Load in the SemEval data ##############################
+##############################
+# Load SemEval Data
+##############################
 
-def load_data(file_path, train_val="trial", target_size=(384, 384), use_cache=True):
-    """Load in the data
-
-    Args:
-        file_path (str): The file path
-        train_val (str): Whether to load in the train, test, or trial set
-        target_size (tuple): The size of each image to use
-            Use (224, 224) for CLIP only, (384, 384) for BLIP
-        use_cache (bool): Whether to use cached images if available
-
-    Returns:
-        data (DataFrame): Target, Sentence, image_0-9, label
-        image_dict (dict): Map image name to image
+def load_data(file_path, train_val="test", target_size=(384, 384)):
     """
-    # Train/trial/test set
-    path = os.path.join(file_path, train_val+"_v1")
-    
-    # Cache file path
-    cache_file = os.path.join(path, f"image_cache.pkl")
+    Load the SemEval dataset.
 
-    # Load in the data
-    path_data = os.path.join(path, train_val+".data.v1.txt")
+    Expected structure:
+        <file_path>/
+            train_v1/
+                train.data.v1.txt
+                train.gold.v1.txt
+                train_images_v1/
+            trial_v1/
+            test_v1/
+    """
+    path = os.path.join(file_path, train_val + "_v1")
+
+    # Load text data
+    path_data = os.path.join(path, train_val + ".data.v1.txt")
     data = pd.read_csv(path_data, sep='\t', header=None)
-    data.columns = ['target', 'sentence'] + [f'image_{i}' for i in range(data.shape[1] - 2)]
+    data.columns = ['target', 'sentence'] + [
+        f'image_{i}' for i in range(data.shape[1] - 2)
+    ]
 
-    # Load in the labels
-    path_labels = os.path.join(path, train_val+".gold.v1.txt")
-    with open(path_labels, "r") as f: 
+    # Load labels
+    path_labels = os.path.join(path, train_val + ".gold.v1.txt")
+    with open(path_labels, "r") as f:
         gold_labels = [line.strip() for line in f]
     data['label'] = gold_labels
 
-    # Try to load cached images
-    if use_cache and os.path.exists(cache_file):
-        print(f"Loading cached images from {cache_file}...")
-        with open(cache_file, 'rb') as f:
-            image_dict = pickle.load(f)
-        print(f"Loaded {len(image_dict)} cached images")
-        return data, image_dict
-
-    # Load in the images (first time or if cache disabled)
-    path_images = os.path.join(path, train_val+"_images_v1")
+    # Load images
+    path_images = os.path.join(path, train_val + "_images_v1")
     image_dict = {}
     files = os.listdir(path_images)
-    for filename in tqdm(files, total=len(files), desc="Loading in the Images", unit="image"):
-        if filename.lower().endswith('.jpg') or filename.lower().endswith('.png'): 
+
+    for filename in tqdm(files, total=len(files), desc="Loading Images", unit="image"):
+        if filename.lower().endswith(('.jpg', '.png', '.jpeg')):
             try:
                 img = Image.open(os.path.join(path_images, filename)).convert('RGB')
-                img_resized = img.resize(target_size, resample=Image.BICUBIC)
-                image_dict[filename] = img_resized
+                image_dict[filename] = img
             except Exception:
                 continue
-
-    # Save to cache
-    if use_cache:
-        print(f"Saving images to cache: {cache_file}...")
-        with open(cache_file, 'wb') as f:
-            pickle.dump(image_dict, f, protocol=pickle.HIGHEST_PROTOCOL)
-        print(f"Cached {len(image_dict)} images")
 
     return data, image_dict
 
 
-############################## Text helpers (micro-prompts + dual-channel) ##############################
+##############################
+# Basic CLIP Text Embeddings
+##############################
+
+def get_clip_text_emb(text, processor, model):
+    """
+    Single text → CLIP embedding (normalized).
+    """
+    device = next(model.parameters()).device
+    with torch.no_grad():
+        inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        feat = model.get_text_features(**inputs)
+        feat = F.normalize(feat, p=2, dim=-1)
+    return feat[0]   # (d,)
+
+
+def get_clip_text_emb_from_list(text_list, processor, model):
+    """
+    Multiple texts → average CLIP embedding (normalized).
+    """
+    device = next(model.parameters()).device
+    embs = []
+
+    with torch.no_grad():
+        for text in text_list:
+            inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True)
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            feat = model.get_text_features(**inputs)
+            feat = F.normalize(feat, p=2, dim=-1)
+            embs.append(feat[0])
+
+    embs = torch.stack(embs, dim=0)        # (N, d)
+    mean_emb = embs.mean(dim=0)            # (d,)
+    mean_emb = F.normalize(mean_emb, p=2, dim=-1)
+    return mean_emb
+
+
+##############################
+# Context Word Extraction (spaCy)
+##############################
 
 def extract_context_word(target: str, sentence: str) -> str:
     """
@@ -101,7 +122,7 @@ def extract_context_word(target: str, sentence: str) -> str:
 
     tokens = s.split()
 
-    # Case 1: exactly two tokens, one is target → use the other as context
+    # Case 1: exactly two tokens, one of them is the target
     if len(tokens) == 2:
         t_low = t.lower()
         tok0, tok1 = tokens[0], tokens[1]
@@ -110,9 +131,8 @@ def extract_context_word(target: str, sentence: str) -> str:
         if tok1.lower() == t_low:
             return tok0
 
-    # Otherwise, just treat sentence as context phrase
+    # Otherwise, just treat the whole sentence as "context"
     return s
-
 
 def get_synonym(word: str) -> str | None:
     """
@@ -136,81 +156,62 @@ def get_synonym(word: str) -> str | None:
 
     return lemmas[0].replace("_", " ")
 
-
-def build_photo_prompts(target: str, sentence: str) -> list[str]:
+def build_micro_prompts(target: str, sentence: str) -> list[str]:
     """
-    'Photo-style' prompts – what CLIP saw a lot of during training.
+    Build a set of short, CLIP-friendly micro-prompts
+    from the target word and its context phrase.
     """
     target = str(target).strip()
     sentence = "" if sentence is None else str(sentence).strip()
 
+    # Core context word/phrase (e.g. 'erosion' from 'bank erosion')
     context = extract_context_word(target, sentence).strip()
     base_context = context if context else sentence
 
     prompts: list[str] = []
 
-    prompts.append(f"a photo of {target} {base_context}".strip())
-    prompts.append(f"{target} {base_context}, realistic photo".strip())
-    prompts.append(f"{target} near {base_context}, real world".strip())
-    prompts.append(f"{target} with {base_context}, natural scene".strip())
-    prompts.append(f"{target} appearing in a {base_context} environment".strip())
-    prompts.append(f"{target} {base_context}, high quality photograph".strip())
-
-    # synonym-boosted variant
-    t_syn = get_synonym(target)
-    c_syn = get_synonym(context) if context else None
-    syn_target = t_syn if t_syn else target
-    syn_context = c_syn if c_syn else base_context
-    if syn_target and syn_context:
-        prompts.append(f"a photo of {syn_target} {syn_context}".strip())
-
-    return [p for p in prompts if p]
-
-
-def build_semantic_prompts(target: str, sentence: str) -> list[str]:
-    """
-    'Semantic / caption-style' prompts that describe meaning and usage,
-    still kept short for CLIP.
-    """
-    target = str(target).strip()
-    sentence = "" if sentence is None else str(sentence).strip()
-
-    context = extract_context_word(target, sentence).strip()
-    base_context = context if context else sentence
-
-    prompts: list[str] = []
-
+    # 1–11: core micro-prompts
+    prompts.append(f"{target} {base_context}".strip())
+    prompts.append(f"{base_context} {target}".strip())
+    prompts.append(f"{target} {base_context} photo".strip())
+    prompts.append(f"{target} {base_context} scene".strip())
+    prompts.append(f"{target} near {base_context}".strip())
+    prompts.append(f"{target} with {base_context}".strip())
+    prompts.append(f"a photo of {target} in {base_context}".strip())
+    prompts.append(f"real {target} with {base_context}".strip())
     prompts.append(f"{target} related to {base_context}".strip())
-    prompts.append(f"the concept of {target} in {base_context}".strip())
-    prompts.append(f"{target} in the context of {base_context}".strip())
+    prompts.append(f"{target} appearing in a {base_context} setting".strip())
     prompts.append(f"visual sense of {target} in {base_context}".strip())
-    prompts.append(f"illustration of {target} used with {base_context}".strip())
 
-    # sentence-level rewrites
-    if sentence:
-        prompts.append(f"a visual depiction of: {sentence}".strip())
-        prompts.append(f"illustration of the phrase: {sentence}".strip())
-        prompts.append(f"{sentence} (image)".strip())
-        prompts.append(f"{sentence}, realistic photography".strip())
+    # 12: synonym-expanded variant
+    target_syn = get_synonym(target)
+    context_syn = get_synonym(context) if context else None
 
-    return [p for p in prompts if p]
+    syn_target = target_syn if target_syn else target
+    syn_context = context_syn if context_syn else base_context
 
+    if syn_target and syn_context:
+        prompts.append(f"{syn_target} {syn_context}".strip())
 
-def get_prompted_text_embedding(
-    prompts: list[str],
+    # Remove any accidental empties
+    prompts = [p for p in prompts if p]
+
+    return prompts
+
+def get_text_embedding_from_micro_prompts(
+    target: str,
+    sentence: str,
     processor: CLIPProcessor,
     model: CLIPModel,
 ) -> torch.Tensor:
     """
-    Encode a list of prompts with CLIP text encoder, then average + normalize.
+    Encode 12+ micro-prompts with CLIP text encoder,
+    average them, and L2-normalize to get a strong text embedding.
     """
     model.eval()
     device = next(model.parameters()).device
 
-    if len(prompts) == 0:
-        # Fallback zero vector (should not really happen)
-        d = model.config.projection_dim
-        return torch.zeros(d, device=device)
+    prompts = build_micro_prompts(target, sentence)
 
     with torch.no_grad():
         inputs = processor(
@@ -220,42 +221,16 @@ def get_prompted_text_embedding(
             truncation=True,
         )
         inputs = {k: v.to(device) for k, v in inputs.items()}
-        feats = model.get_text_features(**inputs)  # (P, d)
+        feats = model.get_text_features(**inputs)   # (P, d)
         feats = F.normalize(feats, p=2, dim=-1)
-        mean_feat = feats.mean(dim=0)             # (d,)
+        mean_feat = feats.mean(dim=0)              # (d,)
         mean_feat = F.normalize(mean_feat, p=2, dim=-1)
 
-    return mean_feat
+    return mean_feat   # shape (d,)
 
-
-def get_dual_channel_text_embedding(
-    target: str,
-    sentence: str,
-    processor: CLIPProcessor,
-    model: CLIPModel,
-    photo_weight: float = 0.6,
-    semantic_weight: float = 0.4,
-) -> torch.Tensor:
-    """
-    Dual-channel text embedding:
-      - photo-style prompts channel
-      - semantic/context prompts channel
-    Then weighted combination + normalization.
-    """
-    photo_prompts = build_photo_prompts(target, sentence)
-    sem_prompts = build_semantic_prompts(target, sentence)
-
-    photo_emb = get_prompted_text_embedding(photo_prompts, processor, model)
-    sem_emb = get_prompted_text_embedding(sem_prompts, processor, model)
-
-    combined = photo_weight * photo_emb + semantic_weight * sem_emb
-    combined = F.normalize(combined, p=2, dim=-1)
-    combined = F.normalize(combined, p=2, dim=-1) #double normalization
-
-    return combined  # (d,)
-
-
-############################## Image Augmentations ##############################
+##############################
+# Image Augmentations (your strong pipeline)
+##############################
 
 def random_geometric_augment(img: Image.Image) -> Image.Image:
     """Mild random geometric transforms: flip, rotation, slight zoom/crop."""
@@ -311,11 +286,9 @@ def random_photometric_augment(img: Image.Image) -> Image.Image:
     return out
 
 
-def generate_tta_views(
-    img: Image.Image,
-    num_random_augs: int = 3,
-    out_size=(224, 224),
-) -> list[Image.Image]:
+def generate_tta_views(img: Image.Image,
+                       num_random_augs: int = 2,
+                       out_size=(224, 224)) -> list[Image.Image]:
     """
     Strong TTA for CLIP:
     - original
@@ -449,40 +422,12 @@ def center_saliency_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.I
     return crops
 
 
-def mid_quadrant_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Image]:
-    """
-    Mid-quadrant crops: centers of four quadrants between center and corners.
-    Helps capture off-center important regions.
-    """
-    w, h = img.size
-    crops = []
-
-    cw, ch = w // 2, h // 2  # crop width/height ~ half
-    # centers of quadrants
-    centers = [
-        (w // 4, h // 4),         # mid-top-left
-        (3 * w // 4, h // 4),     # mid-top-right
-        (w // 4, 3 * h // 4),     # mid-bottom-left
-        (3 * w // 4, 3 * h // 4), # mid-bottom-right
-    ]
-
-    for cx, cy in centers:
-        left = max(0, cx - cw // 2)
-        top = max(0, cy - ch // 2)
-        right = min(w, left + cw)
-        bottom = min(h, top + ch)
-        crop = img.crop((left, top, right, bottom))
-        crops.append(crop.resize(out_size, resample=Image.BICUBIC))
-
-    return crops
-
-
 def get_image_embedding(
     img: Image.Image,
     processor: CLIPProcessor,
     model: CLIPModel,
-    temp: float = 0.7,
-    out_size=(224, 224),
+    temp: float = 0.65,
+    out_size=(224, 224)
 ) -> torch.Tensor:
     """
     Build a rich multi-view embedding:
@@ -490,7 +435,7 @@ def get_image_embedding(
     - Multi-crops (center + corners + zoomed)
     - Grid patches
     - Center-focused crops
-    - Mid-quadrant crops
+
     Then:
     - Batch all views through CLIP
     - Average features
@@ -500,19 +445,17 @@ def get_image_embedding(
     device = next(model.parameters()).device
 
     # Collect all views
-    views: list[Image.Image] = []
+    views = []
     views.extend(generate_tta_views(img, num_random_augs=2, out_size=out_size))
     views.extend(multi_crops(img, out_size=out_size))
     views.extend(grid_patches(img, grid_size=3, out_size=out_size))
     views.extend(center_saliency_crops(img, out_size=out_size))
-    views.extend(mid_quadrant_crops(img, out_size=out_size))
 
     with torch.no_grad():
         inputs = processor(images=views, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
-        # If on GPU, use autocast for speed
-        use_amp = (device.type == "cuda") if isinstance(device, torch.device) else False
+        use_amp = (isinstance(device, torch.device) and device.type == "cuda")
         if hasattr(torch.cuda, "amp"):
             ctx = torch.cuda.amp.autocast(enabled=use_amp)
         else:
@@ -534,52 +477,50 @@ def get_image_embedding(
     return feat_final
 
 
-############################## Choosing Images ##############################
+##############################
+# Main Matching Function
+##############################
 
 def choose_image(
     target,
     sentence,
     images,
     image_dict,
-    tokenizer=None,
-    model=None,
-    processor=None,
-    blip_model=None,
-    ner=None,
-    filter_for_pos=True,
-    embedding_weights=None,
-    print_output=False,
+    model,
+    processor,
+    nlp,
+    text_weights=(0.60, 0.25, 0.15),
+    img_temp=0.65,
+    print_output=False
 ):
     """
-    Choose the best matching image using:
-    - dual-channel text embedding (photo + semantic prompts)
-    - rich multi-view CLIP image embeddings
+    - Build fused text embedding:
+        sentence + (target, context_word) + micro-prompts
+    - Build strong image embeddings via multi-view CLIP
+    - Rank images by cosine similarity
     """
-    if not (isinstance(processor, CLIPProcessor) and isinstance(model, CLIPModel)):
-        raise ValueError("Processor and model must be CLIPProcessor and CLIPModel.")
-
     device = next(model.parameters()).device
 
-    # 1. Text embedding (dual-channel micro-prompt fusion)
-    text_emb = get_dual_channel_text_embedding(
+    # 1. Build final text embedding
+    text_emb = get_text_embedding_from_micro_prompts(
         target=target,
         sentence=sentence,
         processor=processor,
         model=model,
-        photo_weight=0.6,
-        semantic_weight=0.4,
-    )
-    text_emb = text_emb.unsqueeze(0)  # (1, d)
+        # nlp=nlp,
+        # weights=text_weights,
+    )  # (1, d)
 
-    # 2. Image embeddings
-    img_emb_list = []
+    # 2. Compute image embeddings
+    img_embs = []
     valid_names = []
 
     for name in images:
         valid_names.append(name)
+
         if name not in image_dict:
             d = model.config.projection_dim
-            img_emb_list.append(torch.zeros(d, device=device))
+            img_embs.append(torch.zeros(d, device=device))
             continue
 
         img = image_dict[name]
@@ -587,36 +528,35 @@ def choose_image(
             img,
             processor=processor,
             model=model,
-            temp=0.7,
+            temp=img_temp
         )
-        img_emb_list.append(emb)
+        img_embs.append(emb)
 
-    img_feats = torch.stack(img_emb_list, dim=0)  # (N, d)
+    img_feats = torch.stack(img_embs, dim=0)  # (N, d)
 
-    # 3. Rank by cosine similarity
+    # 3. Rank
     sims = (text_emb @ img_feats.T).squeeze(0).detach().cpu().numpy()
-    ranked_indices = np.argsort(sims)[::-1]
-    ranked_images = [valid_names[i] for i in ranked_indices]
+    ranked_idx = np.argsort(sims)[::-1]
+    ranked_imgs = [valid_names[i] for i in ranked_idx]
 
     if print_output:
-        for rank, i in enumerate(ranked_indices):
-            name = valid_names[i]
-            if name in image_dict:
-                plt.imshow(image_dict[name])
-                plt.title(f"Rank {rank+1} | sim={sims[i]:.4f}\nSentence: {sentence}")
-                plt.axis("off")
-                plt.show()
-        print("Ranked Images:", ranked_images)
+        print(f"\nSentence: {sentence}")
+        print(f"Target: {target}")
+        print("Ranked images (best → worst):", ranked_imgs)
 
-    ranked_captions = [None] * len(ranked_images)
-    ranked_embs = [None] * len(ranked_images)
-    return ranked_images, ranked_captions, ranked_embs
+    ranked_captions = [None] * len(ranked_imgs)
+    ranked_embs = [None] * len(ranked_imgs)
+
+    return ranked_imgs, ranked_captions, ranked_embs
 
 
-############################## Main ##############################
+##############################
+# Main Script
+##############################
 
 if __name__ == "__main__":
 
+    # Device
     if torch.backends.mps.is_available():
         device = torch.device("mps")
     elif torch.cuda.is_available():
@@ -627,14 +567,15 @@ if __name__ == "__main__":
     file_path = "dataset"
     print_output = False
 
-    # Download WordNet data if needed (for synonyms)
-    nltk.download("wordnet", quiet=True)
-    nltk.download("omw-1.4", quiet=True)
-
+    # CLIP model
     model_name = "openai/clip-vit-base-patch32"
     processor = CLIPProcessor.from_pretrained(model_name)
     model = CLIPModel.from_pretrained(model_name).to(device)
 
+    # spaCy (for context word extraction)
+    nlp = spacy.load("en_core_web_sm")
+
+    # Load data
     data, image_dict = load_data(file_path=file_path, train_val="trial")
 
     predicted_ranks = []
@@ -644,19 +585,17 @@ if __name__ == "__main__":
         images = [row[f"image_{i}"] for i in range(10)]
         label = row["label"]
 
-        ranked_images, ranked_captions, ranked_embs = choose_image(
-            target,
-            sentence,
-            images,
-            image_dict,
-            tokenizer=None,
+        ranked_images, _, _ = choose_image(
+            target=target,
+            sentence=sentence,
+            images=images,
+            image_dict=image_dict,
             model=model,
             processor=processor,
-            blip_model=None,
-            ner=None,
-            filter_for_pos=False,
-            embedding_weights=None,
-            print_output=print_output,
+            nlp=nlp,
+            text_weights=(0.60, 0.25, 0.15),  # can tune
+            img_temp=0.65,                     # can tune
+            print_output=print_output
         )
 
         predicted_rank = ranked_images.index(label) + 1
@@ -664,9 +603,13 @@ if __name__ == "__main__":
         predicted_ranks.append(predicted_rank)
 
     predicted_ranks = np.array(predicted_ranks)
-    mrr = np.mean(1 / predicted_ranks)
+    mrr = np.mean(1.0 / predicted_ranks)
     hit_rate = np.sum(predicted_ranks == 1) / len(predicted_ranks)
 
     print("---------------------------------")
     print(f"MRR: {mrr}")
     print(f"Hit Rate: {hit_rate}")
+
+#Trial set
+#MRR: 0.8458333333333333
+#Hit Rate: 0.75

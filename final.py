@@ -1,70 +1,70 @@
-# Dual-channel text ensemble + rich image augmentation + quadrant crops
+# Dual-channel text ensemble + rich image augmentation + quadrant crops + 80/20 split + Bayesian tuning
 
 import os
-import torch
-import pandas as pd
-import numpy as np
-from PIL import Image, ImageFilter, ImageEnhance
-import matplotlib.pyplot as plt
 import random
-import nltk
 import pickle
+
+import torch
+import torch.nn.functional as F
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from PIL import Image, ImageFilter, ImageEnhance
+from tqdm import tqdm
+import nltk
 from nltk.corpus import wordnet as wn
 
-from tqdm import tqdm
 from transformers import CLIPModel, CLIPProcessor
-import torch.nn.functional as F
+
+import optuna
+from optuna.samplers import TPESampler
 
 
 ############################## Load in the SemEval data ##############################
 
 def load_data(file_path, train_val="trial", target_size=(384, 384), use_cache=True):
-    """Load in the data
-
-    Args:
-        file_path (str): The file path
-        train_val (str): Whether to load in the train, test, or trial set
-        target_size (tuple): The size of each image to use
-            Use (224, 224) for CLIP only, (384, 384) for BLIP
-        use_cache (bool): Whether to use cached images if available
+    """
+    Load SemEval data and images with optional disk caching.
 
     Returns:
-        data (DataFrame): Target, Sentence, image_0-9, label
-        image_dict (dict): Map image name to image
+        data (DataFrame): columns [target, sentence, image_0-9, label]
+        image_dict (dict): {filename -> PIL.Image}
     """
-    # Train/trial/test set
-    path = os.path.join(file_path, train_val+"_v1")
-    
+    # Train/trial/test set directory
+    path = os.path.join(file_path, train_val + "_v1")
+
     # Cache file path
-    cache_file = os.path.join(path, f"image_cache.pkl")
+    cache_file = os.path.join(path, "image_cache.pkl")
 
     # Load in the data
-    path_data = os.path.join(path, train_val+".data.v1.txt")
-    data = pd.read_csv(path_data, sep='\t', header=None)
-    data.columns = ['target', 'sentence'] + [f'image_{i}' for i in range(data.shape[1] - 2)]
+    path_data = os.path.join(path, train_val + ".data.v1.txt")
+    data = pd.read_csv(path_data, sep="\t", header=None)
+    data.columns = ["target", "sentence"] + [f"image_{i}" for i in range(data.shape[1] - 2)]
 
     # Load in the labels
-    path_labels = os.path.join(path, train_val+".gold.v1.txt")
-    with open(path_labels, "r") as f: 
+    path_labels = os.path.join(path, train_val + ".gold.v1.txt")
+    with open(path_labels, "r", encoding="utf-8") as f:
         gold_labels = [line.strip() for line in f]
-    data['label'] = gold_labels
+    data["label"] = gold_labels
 
     # Try to load cached images
     if use_cache and os.path.exists(cache_file):
         print(f"Loading cached images from {cache_file}...")
-        with open(cache_file, 'rb') as f:
+        with open(cache_file, "rb") as f:
             image_dict = pickle.load(f)
         print(f"Loaded {len(image_dict)} cached images")
         return data, image_dict
 
     # Load in the images (first time or if cache disabled)
-    path_images = os.path.join(path, train_val+"_images_v1")
+    path_images = os.path.join(path, train_val + "_images_v1")
     image_dict = {}
     files = os.listdir(path_images)
-    for filename in tqdm(files, total=len(files), desc="Loading in the Images", unit="image"):
-        if filename.lower().endswith('.jpg') or filename.lower().endswith('.png'): 
+    for filename in tqdm(files, total=len(files),
+                         desc="Loading in the Images", unit="image"):
+        if filename.lower().endswith(".jpg") or filename.lower().endswith(".png"):
             try:
-                img = Image.open(os.path.join(path_images, filename)).convert('RGB')
+                img = Image.open(os.path.join(path_images, filename)).convert("RGB")
                 img_resized = img.resize(target_size, resample=Image.BICUBIC)
                 image_dict[filename] = img_resized
             except Exception:
@@ -73,7 +73,7 @@ def load_data(file_path, train_val="trial", target_size=(384, 384), use_cache=Tr
     # Save to cache
     if use_cache:
         print(f"Saving images to cache: {cache_file}...")
-        with open(cache_file, 'wb') as f:
+        with open(cache_file, "wb") as f:
             pickle.dump(image_dict, f, protocol=pickle.HIGHEST_PROTOCOL)
         print(f"Cached {len(image_dict)} images")
 
@@ -139,7 +139,7 @@ def get_synonym(word: str) -> str | None:
 
 def build_photo_prompts(target: str, sentence: str) -> list[str]:
     """
-    'Photo-style' prompts – what CLIP saw a lot of during training.
+    'Photo-style' prompts – closer to CLIP's pretraining distribution.
     """
     target = str(target).strip()
     sentence = "" if sentence is None else str(sentence).strip()
@@ -240,7 +240,7 @@ def get_dual_channel_text_embedding(
     Dual-channel text embedding:
       - photo-style prompts channel
       - semantic/context prompts channel
-    Then weighted combination + normalization.
+    Then weighted combination + double normalization.
     """
     photo_prompts = build_photo_prompts(target, sentence)
     sem_prompts = build_semantic_prompts(target, sentence)
@@ -250,7 +250,7 @@ def get_dual_channel_text_embedding(
 
     combined = photo_weight * photo_emb + semantic_weight * sem_emb
     combined = F.normalize(combined, p=2, dim=-1)
-    combined = F.normalize(combined, p=2, dim=-1) #double normalization
+    combined = F.normalize(combined, p=2, dim=-1)  # double normalization
 
     return combined  # (d,)
 
@@ -494,7 +494,7 @@ def get_image_embedding(
     Then:
     - Batch all views through CLIP
     - Average features
-    - Normalize + temperature scale
+    - Normalize + temperature scaling
     """
     model.eval()
     device = next(model.parameters()).device
@@ -541,14 +541,12 @@ def choose_image(
     sentence,
     images,
     image_dict,
-    tokenizer=None,
-    model=None,
-    processor=None,
-    blip_model=None,
-    ner=None,
-    filter_for_pos=True,
-    embedding_weights=None,
-    print_output=False,
+    model: CLIPModel,
+    processor: CLIPProcessor,
+    photo_weight: float = 0.6,
+    semantic_weight: float = 0.4,
+    temp: float = 0.7,
+    print_output: bool = False,
 ):
     """
     Choose the best matching image using:
@@ -566,8 +564,8 @@ def choose_image(
         sentence=sentence,
         processor=processor,
         model=model,
-        photo_weight=0.6,
-        semantic_weight=0.4,
+        photo_weight=photo_weight,
+        semantic_weight=semantic_weight,
     )
     text_emb = text_emb.unsqueeze(0)  # (1, d)
 
@@ -587,7 +585,7 @@ def choose_image(
             img,
             processor=processor,
             model=model,
-            temp=0.7,
+            temp=temp,
         )
         img_emb_list.append(emb)
 
@@ -613,10 +611,101 @@ def choose_image(
     return ranked_images, ranked_captions, ranked_embs
 
 
+############################## Evaluation helpers ##############################
+
+def evaluate_subset(
+    df: pd.DataFrame,
+    image_dict: dict,
+    model: CLIPModel,
+    processor: CLIPProcessor,
+    photo_weight: float,
+    semantic_weight: float,
+    temp: float,
+) -> tuple[float, float]:
+    """
+    Compute MRR and HitRate for a given subset of data.
+    """
+    ranks = []
+
+    for _, row in df.iterrows():
+        target = row["target"]
+        sentence = row["sentence"]
+        images = [row[f"image_{i}"] for i in range(10)]
+        label = row["label"]
+
+        ranked_images, _, _ = choose_image(
+            target=target,
+            sentence=sentence,
+            images=images,
+            image_dict=image_dict,
+            model=model,
+            processor=processor,
+            photo_weight=photo_weight,
+            semantic_weight=semantic_weight,
+            temp=temp,
+            print_output=False,
+        )
+
+        rank = ranked_images.index(label) + 1
+        ranks.append(rank)
+
+    ranks = np.array(ranks)
+    mrr = np.mean(1.0 / ranks)
+    hit = np.mean(ranks == 1)
+    return mrr, hit
+
+
+############################## Optuna Objective ##############################
+
+def objective(trial, data, val_idx, image_dict, model, processor):
+    """
+    Optuna objective: sample hyperparameters and evaluate on fixed validation subset.
+    Returns negative MRR so that direction='minimize' corresponds to maximizing MRR.
+    """
+
+    # ------------------------------
+    # Sample hyperparameters
+    # ------------------------------
+    photo_weight = trial.suggest_float("photo_weight", 0.1, 0.9)
+    semantic_weight = trial.suggest_float("semantic_weight", 0.1, 0.9)
+
+    # enforce that they sum roughly to 1
+    total = photo_weight + semantic_weight
+    photo_weight /= total
+    semantic_weight /= total
+
+    temp = trial.suggest_float("temp", 0.4, 1.0)
+
+    # ------------------------------
+    # Fixed validation subset (80/20 split precomputed)
+    # ------------------------------
+    val_data = data.iloc[val_idx]
+
+    mrr, hit = evaluate_subset(
+        val_data,
+        image_dict=image_dict,
+        model=model,
+        processor=processor,
+        photo_weight=photo_weight,
+        semantic_weight=semantic_weight,
+        temp=temp,
+    )
+
+    # You could also combine MRR + HitRate; here we just maximize MRR
+    trial.set_user_attr("mrr", float(mrr))
+    trial.set_user_attr("hit_rate", float(hit))
+
+    # Optuna minimizes, so return negative MRR
+    return -mrr
+
+
 ############################## Main ##############################
 
 if __name__ == "__main__":
 
+    ###########################################################################
+    # Device Setup
+    ###########################################################################
     if torch.backends.mps.is_available():
         device = torch.device("mps")
     elif torch.cuda.is_available():
@@ -624,49 +713,116 @@ if __name__ == "__main__":
     else:
         device = torch.device("cpu")
 
+    print(f"Using device: {device}")
+
+    ###########################################################################
+    # Load Dataset
+    ###########################################################################
     file_path = "dataset"
     print_output = False
 
-    # Download WordNet data if needed (for synonyms)
+    # WordNet for synonyms
     nltk.download("wordnet", quiet=True)
     nltk.download("omw-1.4", quiet=True)
 
+    ###########################################################################
+    # Load CLIP (currently ViT-B/32; change model_name if you want ViT-L/14)
+    ###########################################################################
     model_name = "openai/clip-vit-base-patch32"
     processor = CLIPProcessor.from_pretrained(model_name)
     model = CLIPModel.from_pretrained(model_name).to(device)
 
+    print("Loading dataset (trial set)...")
     data, image_dict = load_data(file_path=file_path, train_val="trial")
 
-    predicted_ranks = []
-    for idx, row in data.iterrows():
-        target = row["target"]
-        sentence = row["sentence"]
-        images = [row[f"image_{i}"] for i in range(10)]
-        label = row["label"]
+    ###########################################################################
+    # 80/20 Internal Split (for reference)
+    ###########################################################################
+    np.random.seed(42)
+    indices = np.arange(len(data))
+    np.random.shuffle(indices)
 
-        ranked_images, ranked_captions, ranked_embs = choose_image(
-            target,
-            sentence,
-            images,
-            image_dict,
-            tokenizer=None,
+    split = int(0.8 * len(indices))
+    train_idx = indices[:split]
+    val_idx = indices[split:]
+
+    train_data = data.iloc[train_idx].reset_index(drop=True)
+    val_data = data.iloc[val_idx].reset_index(drop=True)
+
+    print(f"[INFO] Training size: {len(train_data)} | Validation size: {len(val_data)}")
+
+    ###########################################################################
+    # Bayesian Optimization (Optuna)
+    ###########################################################################
+    print("\n==============================")
+    print("🔥 Starting Bayesian tuning...")
+    print("==============================")
+
+    sampler = TPESampler(seed=42)
+    study = optuna.create_study(
+        direction="minimize",  # because objective returns -MRR
+        sampler=sampler,
+    )
+
+    N_TRIALS = 40  # adjust as you like (more = slower but better search)
+
+    study.optimize(
+        lambda trial: objective(
+            trial,
+            data=data,
+            val_idx=val_idx,
+            image_dict=image_dict,
             model=model,
             processor=processor,
-            blip_model=None,
-            ner=None,
-            filter_for_pos=False,
-            embedding_weights=None,
-            print_output=print_output,
-        )
+        ),
+        n_trials=N_TRIALS,
+        show_progress_bar=True,
+    )
 
-        predicted_rank = ranked_images.index(label) + 1
-        print("Predicted Rank:", predicted_rank)
-        predicted_ranks.append(predicted_rank)
+    ###########################################################################
+    # Print / Save Best Hyperparameters
+    ###########################################################################
+    print("\n==============================")
+    print("🏆 BEST BAYESIAN TRIAL")
+    print("==============================")
+    best_trial = study.best_trial
+    best_params = best_trial.params
+    print("Best params:", best_params)
+    print("Best trial MRR:", -best_trial.value)
+    print("Stored Hit Rate on best trial:", best_trial.user_attrs.get("hit_rate", None))
 
-    predicted_ranks = np.array(predicted_ranks)
-    mrr = np.mean(1 / predicted_ranks)
-    hit_rate = np.sum(predicted_ranks == 1) / len(predicted_ranks)
+    with open("best_hyperparams.pkl", "wb") as f:
+        pickle.dump(best_params, f)
 
-    print("---------------------------------")
-    print(f"MRR: {mrr}")
-    print(f"Hit Rate: {hit_rate}")
+    ###########################################################################
+    # Final Evaluation on Full Trial Set (using best hyperparameters)
+    ###########################################################################
+    print("\nEvaluating full TRIAL set using best hyperparameters...")
+
+    # Unpack best params
+    photo_weight = best_params["photo_weight"]
+    semantic_weight = best_params["semantic_weight"]
+    total = photo_weight + semantic_weight
+    photo_weight /= total
+    semantic_weight /= total
+
+    temp = best_params["temp"]
+
+    final_mrr, final_hit = evaluate_subset(
+        data,
+        image_dict=image_dict,
+        model=model,
+        processor=processor,
+        photo_weight=photo_weight,
+        semantic_weight=semantic_weight,
+        temp=temp,
+    )
+
+    ###########################################################################
+    # Print Evaluation Metrics
+    ###########################################################################
+    print("\n==============================")
+    print("📊 FINAL RESULTS (Trial Set)")
+    print("==============================")
+    print(f"MRR:      {final_mrr:.6f}")
+    print(f"Hit Rate: {final_hit:.6f}")
