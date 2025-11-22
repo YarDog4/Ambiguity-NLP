@@ -10,7 +10,8 @@ import random
 import nltk
 import pickle
 from nltk.corpus import wordnet as wn
-
+import optuna
+from optuna.samplers import TPESampler
 from tqdm import tqdm
 from transformers import CLIPModel, CLIPProcessor
 import torch.nn.functional as F
@@ -149,21 +150,29 @@ def build_photo_prompts(target: str, sentence: str) -> list[str]:
 
     prompts: list[str] = []
 
-    prompts.append(f"a photo of {target} {base_context}".strip())
-    prompts.append(f"{target} {base_context}, realistic photo".strip())
-    prompts.append(f"{target} near {base_context}, real world".strip())
-    prompts.append(f"{target} with {base_context}, natural scene".strip())
-    prompts.append(f"{target} appearing in a {base_context} environment".strip())
-    prompts.append(f"{target} {base_context}, high quality photograph".strip())
+    # prompts.append(f"a photo of {target} {base_context}".strip())
+    # prompts.append(f"{target} {base_context}, realistic photo".strip())
+    # prompts.append(f"{target} near {base_context}, real world".strip())
+    # prompts.append(f"{target} with {base_context}, natural scene".strip())
+    # prompts.append(f"{target} appearing in a {base_context} environment".strip())
+    # prompts.append(f"{target} {base_context}, high quality photograph".strip())
+    prompts.append(f"A photo of {target}")
+    prompts.append(f"An image of {target}")
+    if base_context:
+        prompts.append(f"A photo of {target} in the context of {base_context}")
+        prompts.append(f"{target} related to {base_context}, real world")
 
     # synonym-boosted variant
-    t_syn = get_synonym(target)
-    c_syn = get_synonym(context) if context else None
-    syn_target = t_syn if t_syn else target
-    syn_context = c_syn if c_syn else base_context
-    if syn_target and syn_context:
-        prompts.append(f"a photo of {syn_target} {syn_context}".strip())
+    # t_syn = get_synonym(target)
+    # c_syn = get_synonym(context) if context else None
+    # syn_target = t_syn if t_syn else target
+    # syn_context = c_syn if c_syn else base_context
+    # if syn_target and syn_context:
+    #     prompts.append(f"a photo of {syn_target} {syn_context}".strip())
 
+    t_syn = get_synonym(target)
+    if t_syn:
+        prompts.append(f"A photo of {t_syn}")
     return [p for p in prompts if p]
 
 
@@ -180,18 +189,25 @@ def build_semantic_prompts(target: str, sentence: str) -> list[str]:
 
     prompts: list[str] = []
 
-    prompts.append(f"{target} related to {base_context}".strip())
-    prompts.append(f"the concept of {target} in {base_context}".strip())
-    prompts.append(f"{target} in the context of {base_context}".strip())
-    prompts.append(f"visual sense of {target} in {base_context}".strip())
-    prompts.append(f"illustration of {target} used with {base_context}".strip())
+    # prompts.append(f"{target} related to {base_context}".strip())
+    # prompts.append(f"the concept of {target} in {base_context}".strip())
+    # prompts.append(f"{target} in the context of {base_context}".strip())
+    # prompts.append(f"visual sense of {target} in {base_context}".strip())
+    # prompts.append(f"illustration of {target} used with {base_context}".strip())
+    prompts.append(f"{target}, visual concept")
+    if base_context:
+        prompts.append(f"{target} in the context of {base_context}")
+        prompts.append(f"The idea of {target} related to {base_context}")
+
 
     # sentence-level rewrites
+    # if sentence:
+    #     prompts.append(f"a visual depiction of: {sentence}".strip())
+    #     prompts.append(f"illustration of the phrase: {sentence}".strip())
+    #     prompts.append(f"{sentence} (image)".strip())
+    #     prompts.append(f"{sentence}, realistic photography".strip())
     if sentence:
-        prompts.append(f"a visual depiction of: {sentence}".strip())
-        prompts.append(f"illustration of the phrase: {sentence}".strip())
-        prompts.append(f"{sentence} (image)".strip())
-        prompts.append(f"{sentence}, realistic photography".strip())
+        prompts.append(f"A visual depiction of: {sentence}")
 
     return [p for p in prompts if p]
 
@@ -227,6 +243,14 @@ def get_prompted_text_embedding(
 
     return mean_feat
 
+def add_small_noise(x: torch.Tensor, scale: float = 0.01) -> torch.Tensor:
+    """
+    Tiny Gaussian noise to reduce brittleness of prompt representations.
+    """
+    if scale <= 0:
+        return x
+    noise = scale * torch.randn_like(x)
+    return x + noise
 
 def get_dual_channel_text_embedding(
     target: str,
@@ -235,6 +259,7 @@ def get_dual_channel_text_embedding(
     model: CLIPModel,
     photo_weight: float = 0.6,
     semantic_weight: float = 0.4,
+    noise_scale: float = 0.01,
 ) -> torch.Tensor:
     """
     Dual-channel text embedding:
@@ -250,6 +275,8 @@ def get_dual_channel_text_embedding(
 
     combined = photo_weight * photo_emb + semantic_weight * sem_emb
     combined = F.normalize(combined, p=2, dim=-1)
+
+    combined = add_small_noise(combined, scale=noise_scale)
     combined = F.normalize(combined, p=2, dim=-1) #double normalization
 
     return combined  # (d,)
@@ -311,32 +338,87 @@ def random_photometric_augment(img: Image.Image) -> Image.Image:
     return out
 
 
+# def generate_tta_views(
+#     img: Image.Image,
+#     num_random_augs: int = 3,
+#     out_size=(224, 224),
+# ) -> list[Image.Image]:
+#     """
+#     Strong TTA for CLIP:
+#     - original
+#     - horizontal flip
+#     - center crop
+#     - zoomed center
+#     - grayscale
+#     - a few random geometric+photometric augmentations
+#     """
+#     views = []
+#     w, h = img.size
+
+#     # Base resized view
+#     base = img.resize(out_size, resample=Image.BICUBIC)
+#     views.append(base)
+
+#     # Horizontal flip
+#     hflip = img.transpose(Image.FLIP_LEFT_RIGHT).resize(out_size, resample=Image.BICUBIC)
+#     views.append(hflip)
+
+#     # Center crop (80%)
+#     crop_scale = 0.8
+#     cw, ch = int(w * crop_scale), int(h * crop_scale)
+#     left = (w - cw) // 2
+#     top = (h - ch) // 2
+#     center_crop = img.crop((left, top, left + cw, top + ch))
+#     center_crop = center_crop.resize(out_size, resample=Image.BICUBIC)
+#     views.append(center_crop)
+
+#     # Zoomed center (60%)
+#     zoom_scale = 0.6
+#     zw, zh = int(w * zoom_scale), int(h * zoom_scale)
+#     zleft = (w - zw) // 2
+#     ztop = (h - zh) // 2
+#     zoom_crop = img.crop((zleft, ztop, zleft + zw, ztop + zh))
+#     zoom_crop = zoom_crop.resize(out_size, resample=Image.BICUBIC)
+#     views.append(zoom_crop)
+
+#     # Grayscale variant
+#     gray = img.convert("L").convert("RGB").resize(out_size, resample=Image.BICUBIC)
+#     views.append(gray)
+
+#     # A few random augmentations (geometric + photometric)
+#     for _ in range(num_random_augs):
+#         aug = random_geometric_augment(img)
+#         aug = random_photometric_augment(aug)
+#         aug = aug.resize(out_size, resample=Image.BICUBIC)
+#         views.append(aug)
+
+#     return views
+
 def generate_tta_views(
     img: Image.Image,
-    num_random_augs: int = 3,
     out_size=(224, 224),
 ) -> list[Image.Image]:
     """
-    Strong TTA for CLIP:
-    - original
-    - horizontal flip
-    - center crop
-    - zoomed center
-    - grayscale
-    - a few random geometric+photometric augmentations
+    Lightweight TTA (5 views):
+      - original resized
+      - horizontal flip
+      - center crop
+      - slight zoomed center
+      - grayscale
+    This is intentionally small to avoid overfitting + keep speed.
     """
-    views = []
+    views: list[Image.Image] = []
     w, h = img.size
 
-    # Base resized view
+    # 1) Base
     base = img.resize(out_size, resample=Image.BICUBIC)
     views.append(base)
 
-    # Horizontal flip
+    # 2) Horizontal flip
     hflip = img.transpose(Image.FLIP_LEFT_RIGHT).resize(out_size, resample=Image.BICUBIC)
     views.append(hflip)
 
-    # Center crop (80%)
+    # 3) Center crop (80%)
     crop_scale = 0.8
     cw, ch = int(w * crop_scale), int(h * crop_scale)
     left = (w - cw) // 2
@@ -345,7 +427,7 @@ def generate_tta_views(
     center_crop = center_crop.resize(out_size, resample=Image.BICUBIC)
     views.append(center_crop)
 
-    # Zoomed center (60%)
+    # 4) Zoomed center (60%)
     zoom_scale = 0.6
     zw, zh = int(w * zoom_scale), int(h * zoom_scale)
     zleft = (w - zw) // 2
@@ -354,19 +436,11 @@ def generate_tta_views(
     zoom_crop = zoom_crop.resize(out_size, resample=Image.BICUBIC)
     views.append(zoom_crop)
 
-    # Grayscale variant
+    # 5) Grayscale
     gray = img.convert("L").convert("RGB").resize(out_size, resample=Image.BICUBIC)
     views.append(gray)
 
-    # A few random augmentations (geometric + photometric)
-    for _ in range(num_random_augs):
-        aug = random_geometric_augment(img)
-        aug = random_photometric_augment(aug)
-        aug = aug.resize(out_size, resample=Image.BICUBIC)
-        views.append(aug)
-
     return views
-
 
 def multi_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Image]:
     """Center + four corners + zoomed center (multi-crop)."""
@@ -439,6 +513,7 @@ def center_saliency_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.I
     w, h = img.size
     crops = []
 
+
     for scale in [0.7, 0.5]:
         cw, ch = int(w * scale), int(h * scale)
         left = (w - cw) // 2
@@ -481,8 +556,12 @@ def get_image_embedding(
     img: Image.Image,
     processor: CLIPProcessor,
     model: CLIPModel,
-    temp: float = 0.7,
+    # temp: float = 0.7,
     out_size=(224, 224),
+    use_multi_crop=True,
+    use_saliency=True,
+    use_quadrants=True,
+    use_grid_patches=True,
 ) -> torch.Tensor:
     """
     Build a rich multi-view embedding:
@@ -501,11 +580,15 @@ def get_image_embedding(
 
     # Collect all views
     views: list[Image.Image] = []
-    views.extend(generate_tta_views(img, num_random_augs=2, out_size=out_size))
-    views.extend(multi_crops(img, out_size=out_size))
-    views.extend(grid_patches(img, grid_size=3, out_size=out_size))
-    views.extend(center_saliency_crops(img, out_size=out_size))
-    views.extend(mid_quadrant_crops(img, out_size=out_size))
+    views.extend(generate_tta_views(img, out_size=out_size))
+    if use_multi_crop:
+        views.extend(multi_crops(img, out_size=out_size))
+    if use_grid_patches:
+        views.extend(grid_patches(img, grid_size=3, out_size=out_size))
+    if use_saliency:
+        views.extend(center_saliency_crops(img, out_size=out_size))
+    if use_quadrants:
+        views.extend(mid_quadrant_crops(img, out_size=out_size))
 
     with torch.no_grad():
         inputs = processor(images=views, return_tensors="pt")
@@ -528,8 +611,8 @@ def get_image_embedding(
         feat_mean = feats.mean(dim=0)  # (d,)
 
         # Temperature scaling sharpens cosine similarities
-        feat_scaled = feat_mean / temp
-        feat_final = F.normalize(feat_scaled, p=2, dim=-1)
+        # feat_scaled = feat_mean / temp
+        feat_final = F.normalize(feat_mean, p=2, dim=-1)
 
     return feat_final
 
@@ -549,6 +632,11 @@ def choose_image(
     filter_for_pos=True,
     embedding_weights=None,
     print_output=False,
+    noise_scale=0.00,
+    use_saliency=True,
+    use_quadrants=True,
+    use_multi_crop = True,
+    use_grid_patches = True
 ):
     """
     Choose the best matching image using:
@@ -566,10 +654,14 @@ def choose_image(
         sentence=sentence,
         processor=processor,
         model=model,
-        photo_weight=0.6,
-        semantic_weight=0.4,
+        photo_weight=0.5,
+        semantic_weight=0.5,
+        noise_scale = 0.01
     )
     text_emb = text_emb.unsqueeze(0)  # (1, d)
+    
+    text_emb = text_emb + noise_scale * torch.randn_like(text_emb)
+    text_emb = F.normalize(text_emb, p=2, dim=-1)
 
     # 2. Image embeddings
     img_emb_list = []
@@ -587,7 +679,11 @@ def choose_image(
             img,
             processor=processor,
             model=model,
-            temp=0.7,
+            out_size=(224,224),
+            use_multi_crop=use_multi_crop,
+            use_saliency=use_saliency,
+            use_quadrants=use_quadrants,
+            use_grid_patches=use_grid_patches,
         )
         img_emb_list.append(emb)
 
@@ -615,36 +711,246 @@ def choose_image(
 
 ############################## Main ##############################
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
 
-    if torch.backends.mps.is_available():
-        device = torch.device("mps")
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
+#     if torch.backends.mps.is_available():
+#         device = torch.device("mps")
+#     elif torch.cuda.is_available():
+#         device = torch.device("cuda")
+#     else:
+#         device = torch.device("cpu")
 
-    file_path = "dataset"
-    print_output = False
+#     file_path = "dataset"
+#     print_output = False
 
-    # Download WordNet data if needed (for synonyms)
-    nltk.download("wordnet", quiet=True)
-    nltk.download("omw-1.4", quiet=True)
+#     # Download WordNet data if needed (for synonyms)
+#     nltk.download("wordnet", quiet=True)
+#     nltk.download("omw-1.4", quiet=True)
 
-    model_name = "openai/clip-vit-base-patch32"
-    processor = CLIPProcessor.from_pretrained(model_name)
-    model = CLIPModel.from_pretrained(model_name).to(device)
+#     model_name = "openai/clip-vit-base-patch32"
+#     processor = CLIPProcessor.from_pretrained(model_name)
+#     model = CLIPModel.from_pretrained(model_name).to(device)
 
-    data, image_dict = load_data(file_path=file_path, train_val="trial")
+#     data, image_dict = load_data(file_path=file_path, train_val="trial")
+
+#     predicted_ranks = []
+#     for idx, row in data.iterrows():
+#         target = row["target"]
+#         sentence = row["sentence"]
+#         images = [row[f"image_{i}"] for i in range(10)]
+#         label = row["label"]
+
+#         ranked_images, ranked_captions, ranked_embs = choose_image(
+#             target,
+#             sentence,
+#             images,
+#             image_dict,
+#             tokenizer=None,
+#             model=model,
+#             processor=processor,
+#             blip_model=None,
+#             ner=None,
+#             filter_for_pos=False,
+#             embedding_weights=None,
+#             print_output=print_output,
+#         )
+
+#         predicted_rank = ranked_images.index(label) + 1
+#         print("Predicted Rank:", predicted_rank)
+#         predicted_ranks.append(predicted_rank)
+
+#     predicted_ranks = np.array(predicted_ranks)
+#     mrr = np.mean(1 / predicted_ranks)
+#     hit_rate = np.sum(predicted_ranks == 1) / len(predicted_ranks)
+
+#     print("---------------------------------")
+#     print(f"MRR: {mrr}")
+#     print(f"Hit Rate: {hit_rate}")
+
+# if __name__ == "__main__":
+
+#     # Device setup
+#     if torch.backends.mps.is_available():
+#         device = torch.device("mps")
+#     elif torch.cuda.is_available():
+#         device = torch.device("cuda")
+#     else:
+#         device = torch.device("cpu")
+
+#     file_path = "dataset"
+#     print_output = False
+
+#     nltk.download("wordnet", quiet=True)
+#     nltk.download("omw-1.4", quiet=True)
+
+#     # Load ViT-L/14
+#     model_name = "openai/clip-vit-base-patch32"
+#     processor = CLIPProcessor.from_pretrained(model_name)
+#     model = CLIPModel.from_pretrained(model_name).to(device)
+
+#     # Load TRIAL data
+#     data, image_dict = load_data(file_path=file_path, train_val="trial")
+
+#     # -------------------------------------------
+#     # INTERNAL VALIDATION SPLIT (80/20)
+#     # -------------------------------------------
+#     np.random.seed(42)
+#     indices = np.arange(len(data))
+#     np.random.shuffle(indices)
+
+#     split = int(len(indices) * 0.8)
+#     train_idx = indices[:split]
+#     val_idx = indices[split:]
+
+#     train_data = data.iloc[train_idx].reset_index(drop=True)
+#     val_data = data.iloc[val_idx].reset_index(drop=True)
+
+#     print(f"[INFO] Training size: {len(train_data)}  | Validation size: {len(val_data)}")
+
+#     # -------------------------------------------
+#     # HYPERPARAMETER SEARCH SPACE
+#     # -------------------------------------------
+#     search_space = [
+#         (0.6, 0.4, 0.01),
+#         (0.5, 0.5, 0.01),
+#         (0.7, 0.3, 0.01),
+#         (0.6, 0.4, 0.03),
+#         (0.5, 0.5, 0.03),
+#     ]
+
+#     def evaluate_subset(df, photo_w, semantic_w, noise_scale):
+#         """Compute MRR + Hit Rate on a chosen subset."""
+#         ranks = []
+#         for _, row in df.iterrows():
+#             target = row["target"]
+#             sentence = row["sentence"]
+#             images = [row[f"image_{i}"] for i in range(10)]
+#             label = row["label"]
+
+#             ranked_images, _, _ = choose_image(
+#                 target=target,
+#                 sentence=sentence,
+#                 images=images,
+#                 image_dict=image_dict,
+#                 model=model,
+#                 processor=processor,
+#             )
+
+#             ranks.append(ranked_images.index(label) + 1)
+
+#         ranks = np.array(ranks)
+#         mrr = np.mean(1.0 / ranks)
+#         hit = np.mean(ranks == 1)
+#         return mrr, hit
+
+#     # -------------------------------------------
+#     # SEARCH FOR BEST HP ON INTERNAL VALIDATION
+#     # -------------------------------------------
+#     best_score = -1
+#     best_hparams = None
+
+#     print("\n[INFO] Starting hyperparameter search...\n")
+
+#     for (pw, sw, ns) in search_space:
+#         print(f"Testing: photo={pw}, semantic={sw}, noise={ns}")
+
+#         # Monkey-patch hyperparameters inside choose_image call
+#         global_photo_weight = pw
+#         global_semantic_weight = sw
+#         global_noise_scale = ns
+
+#         mrr, hit = evaluate_subset(val_data, pw, sw, ns)
+#         score = mrr + hit  # simple combined objective
+
+#         print(f"  -> MRR={mrr:.4f} | Hit={hit:.4f}")
+
+#         if score > best_score:
+#             best_score = score
+#             best_hparams = (pw, sw, ns)
+
+#     print("\n[INFO] Best Hyperparameters (Validation)")
+#     print("----------------------------------------")
+#     print(f"photo_weight={best_hparams[0]}")
+#     print(f"semantic_weight={best_hparams[1]}")
+#     print(f"noise_scale={best_hparams[2]}")
+
+#     # -------------------------------------------
+#     # FINAL EVAL ON FULL TRIAL SET
+#     # -------------------------------------------
+#     print("\n[INFO] Running final evaluation on FULL trial set...\n")
+
+#     final_ranks = []
+#     for _, row in data.iterrows():
+#         target = row["target"]
+#         sentence = row["sentence"]
+#         images = [row[f"image_{i}"] for i in range(10)]
+#         label = row["label"]
+
+#         ranked_images, _, _ = choose_image(
+#             target=target,
+#             sentence=sentence,
+#             images=images,
+#             image_dict=image_dict,
+#             model=model,
+#             processor=processor,
+#         )
+
+#         final_ranks.append(ranked_images.index(label) + 1)
+
+#     final_ranks = np.array(final_ranks)
+#     final_mrr = np.mean(1.0 / final_ranks)
+#     final_hit = np.mean(final_ranks == 1)
+
+#     print("---------------------------------")
+#     print(f"FINAL MRR (Trial): {final_mrr}")
+#     print(f"FINAL Hit Rate (Trial): {final_hit}")
+
+
+# --------------------------------------------------------------
+# Optuna Objective Function
+# --------------------------------------------------------------
+def objective(trial, data, image_dict, model, processor):
+    """
+    Runs one hyperparameter trial.
+    Returns the MRR on internal validation split.
+    """
+
+    # ------------------------------
+    # Sample hyperparameters
+    # ------------------------------
+    photo_weight   = trial.suggest_float("photo_weight",   0.1, 0.9)
+    semantic_weight = trial.suggest_float("semantic_weight", 0.1, 0.9)
+
+    # ensure they sum to ~1
+    total = photo_weight + semantic_weight
+    photo_weight /= total
+    semantic_weight /= total
+
+    noise_scale = trial.suggest_float("noise_scale", 0.0, 0.08)
+
+    # extra knobs (optional)
+    use_saliency = trial.suggest_categorical("use_saliency", [True, False])
+    use_quadrants = trial.suggest_categorical("use_quadrants", [True, False])
+    use_grid_patches = trial.suggest_categorical("use_grid_patches", [True, False])
+    use_multi_crop = trial.suggest_categorical("use_multi_crop", [True, False])
+    
+
+
+    # ------------------------------
+    # Internal validation split
+    # ------------------------------
+    val_idx = np.random.choice(len(data), size=int(0.3 * len(data)), replace=False)
+    val_data = data.iloc[val_idx]
 
     predicted_ranks = []
-    for idx, row in data.iterrows():
+
+    for _, row in val_data.iterrows():
         target = row["target"]
         sentence = row["sentence"]
         images = [row[f"image_{i}"] for i in range(10)]
         label = row["label"]
 
-        ranked_images, ranked_captions, ranked_embs = choose_image(
+        ranked_images, _, _ = choose_image(
             target,
             sentence,
             images,
@@ -655,22 +961,161 @@ if __name__ == "__main__":
             blip_model=None,
             ner=None,
             filter_for_pos=False,
-            embedding_weights=None,
-            print_output=print_output,
+            embedding_weights=[photo_weight, semantic_weight],
+            print_output=False,
+            noise_scale=noise_scale,
+            use_saliency=use_saliency,
+            use_quadrants=use_quadrants,
+            use_multi_crop=use_multi_crop,
+            use_grid_patches=use_grid_patches,
+        )
+
+        # rank position
+        predicted_rank = ranked_images.index(label) + 1
+        predicted_ranks.append(predicted_rank)
+
+    predicted_ranks = np.array(predicted_ranks)
+
+    mrr = np.mean(1 / predicted_ranks)
+
+    # return NEGATIVE error (Optuna minimizes)
+    return -mrr
+
+if __name__ == "__main__":
+
+    ###########################################################################
+    # Device Setup
+    ###########################################################################
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
+    print(f"Using device: {device}")
+
+    ###########################################################################
+    # Load Dataset
+    ###########################################################################
+    file_path = "dataset"
+    print_output = False
+
+    # WordNet for synonyms (if needed)
+    nltk.download("wordnet", quiet=True)
+    nltk.download("omw-1.4", quiet=True)
+
+    ###########################################################################
+    # Load CLIP ViT-L/14 (or your chosen model)
+    ###########################################################################
+    model_name = "openai/clip-vit-base-patch32"
+    processor = CLIPProcessor.from_pretrained(model_name)
+    model = CLIPModel.from_pretrained(model_name).to(device)
+
+    print("Loading dataset...")
+    data, image_dict = load_data(file_path=file_path, train_val="trial")
+
+    ###########################################################################
+    # Bayesian Optimization (Optuna)
+    ###########################################################################
+    print("\n==============================")
+    print("🔥 Starting Bayesian tuning...")
+    print("==============================")
+
+    import optuna
+    from optuna.samplers import TPESampler
+
+    # Create study
+    sampler = TPESampler(seed=42)
+    study = optuna.create_study(
+        direction="minimize",     # because our objective returns -MRR
+        sampler=sampler
+    )
+
+    # Run optimization
+    N_TRIALS = 40   # you can set 100+ for better results
+
+    study.optimize(
+        lambda trial: objective(
+            trial,
+            data=data,
+            image_dict=image_dict,
+            model=model,
+            processor=processor
+        ),
+        n_trials=N_TRIALS,
+        show_progress_bar=True
+    )
+
+    ###########################################################################
+    # Print / Save Best Hyperparameters
+    ###########################################################################
+    print("\n==============================")
+    print("🏆 BEST BAYESIAN TRIAL")
+    print("==============================")
+    best_params = study.best_trial.params
+    print(best_params)
+
+    # Optionally save to a file
+    with open("best_hyperparams.pkl", "wb") as f:
+        pickle.dump(best_params, f)
+
+    ###########################################################################
+    # Final Evaluation on Full Trial Set (using best hyperparameters)
+    ###########################################################################
+    print("\nEvaluating full TRIAL set using best hyperparameters...")
+
+    predicted_ranks = []
+    photo_weight = best_params["photo_weight"]
+    semantic_weight = best_params["semantic_weight"]
+    noise_scale = best_params["noise_scale"]
+    use_saliency = best_params["use_saliency"]
+    use_quadrants = best_params["use_quadrants"]
+    use_multi_crop = best_params["use_multi_crop"]
+    use_grid_patches = best_params["use_grid_patches"]
+
+
+    for idx, row in data.iterrows():
+        target = row["target"]
+        sentence = row["sentence"]
+        images = [row[f"image_{i}"] for i in range(10)]
+        label = row["label"]
+
+        ranked_images, ranked_captions, ranked_embs = choose_image(
+            target=target,
+            sentence=sentence,
+            images=images,
+            image_dict=image_dict,
+            tokenizer=None,
+            model=model,
+            processor=processor,
+            blip_model=None,
+            ner=None,
+            filter_for_pos=False,
+            embedding_weights=[photo_weight, semantic_weight],
+            print_output=False,
+            noise_scale=noise_scale,
+            use_saliency=use_saliency,
+            use_quadrants=use_quadrants,
+            use_grid_patches=use_grid_patches,
+            use_multi_crop=use_multi_crop
         )
 
         predicted_rank = ranked_images.index(label) + 1
-        print("Predicted Rank:", predicted_rank)
         predicted_ranks.append(predicted_rank)
 
     predicted_ranks = np.array(predicted_ranks)
     mrr = np.mean(1 / predicted_ranks)
     hit_rate = np.sum(predicted_ranks == 1) / len(predicted_ranks)
 
-    print("---------------------------------")
-    print(f"MRR: {mrr}")
-    print(f"Hit Rate: {hit_rate}")
-
+    ###########################################################################
+    # Print Evaluation Metrics
+    ###########################################################################
+    print("\n==============================")
+    print("📊 FINAL RESULTS (Trial Set)")
+    print("==============================")
+    print(f"MRR:      {mrr:.6f}")
+    print(f"Hit Rate: {hit_rate:.6f}")
 
 #Trial set:
 #MRR: 0.8770833333333333
