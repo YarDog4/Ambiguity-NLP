@@ -1,47 +1,19 @@
-# Ambiguity-NLP:
+# Abstract:
 
-This GitHub repository contains notebooks for our COSC 524 final project on Visual Word Sense Disambiguation (VWSD). As a group, we implement and compare different tokenization approaches (character-level, subword, and word embeddings) to establish text-only baselines. We then integrate image embeddings (via CLIP) to test how visual context shifts similarity scores and reduces linguistic ambiguity. Finally, we calculate cosine similarity scores of captions containing homographs (e.g., bank, jam, bat) to measure ambiguity.  The project explores how tokenization and embeddings interact with multimodal models, and quantifies the extent to which images improve disambiguation of ambiguous captions.
-
-The above is subject to change.
-
-Task 1: Tokenization & Embedding Pipeline (by: Danny & Shamik)
-
-Task 2: Cosine Similarity Experiments with Homographs (we should all work on this together)
-
-Task 3: Image-based Disambiguation with CLIP (or something more recent) - (we should all work on this together)
-
-Task 4: Lexical + Visual Knowledge Integration (WordNet + Vision)? - (we should all work on this together)
-
-Question: Since we’re using embeddings (Sentence-BERT, CLIP, etc.), our project is really encoder-focused in terms of Transformers. Do we want to explicitly say that in the README, or just leave it implied?
-
+Ambiguity poses persistent challenges in natural language understanding for both humans and Large Language Models (LLMs). Although LLMs excel at leveraging textual context to infer word meaning, they struggle when a word or phrase may hold multiple interpretations. Ambiguity exists in many forms such as lexical, syntactic, semantic, pragmatic, and more. We focus on lexical ambiguity, where one word has multiple distinct meanings. Specifically, we develop a model for Visual Word Sense Disambiguation (VWSD) on the SemEval-2023 dataset to predict which image best represents a target word in an ambiguous phrase. We use CLIP to generate textual and visual embeddings and cosine similarity to rank the candidate images. Expanding on the ideas of previous work, we refine our model by leveraging synonyms from WordNet, incorporating textual prompts, translating the sentences, and augmenting the images. This leads to a more generalizable model that can effectively resolve lexical ambiguity in settings with visual input.
 
 # How to run the code:
 
-On a window's system, you can run this code by writing ```python filename.py``` in the terminal's command line.
-
-The code that you should run to see progressive results include ```ambiguity.py```, ```ambiguity_final.py```, ```test.py```
+On a window's system, you can run this code by running ```python final.py```. final.py is the file with the most recent model. All the other files are various scripts we used to debug and test earlier versions of the model.
 
 
 ## RESULTS:
 
-### Trial Sets
+The dataset can be found at https://raganato.github.io/vwsd/
+
+### Test Sets
 Base Clip Approach:
 
-`MRR: 0.734375`\
-`Hit Rate: 0.5625`
-
-Clip with Wordnet:
-
-`MRR: 0.5355902777777778`\
-`Hit Rate: 0.3125`
-
-Translation Results Comparison
-| Sentence Translation Experiment| MRR    | Hit Rate |
-|--------------------------------|--------|----------|
-| Baseline (English only)        | 0.7217 | 0.5788   |
-| Spanish                        | 0.6989 | 0.5508   |
-| French                         | 0.6958 | 0.5443   |  
-| German                         | 0.6729 | 0.5162   |   
-| Multi (ES+FR+DE)               | 0.6756 | 0.5313   |   
-| Multi (ES+FR)                  | 0.6827 | 0.5292   |
+`MRR: 0.7511`\
+`Hit Rate: 0.6199`
 
