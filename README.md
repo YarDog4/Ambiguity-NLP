@@ -8,7 +8,7 @@ On a window's system, you can run this code by running ```python final.py```. fi
 
 The versions of Python used to run include Python 3.13.3 and 3.9.6.
 
-The requirement.txt file includes the versions of the packages we used.
+The requirements.txt file includes the versions of the packages we used.
 
 
 ## RESULTS:
