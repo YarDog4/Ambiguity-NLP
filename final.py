@@ -1,5 +1,4 @@
-# Dual-channel text ensemble + rich image augmentation + quadrant crops + 80/20 split + Bayesian tuning
-
+#Dual-channel text ensemble + rich image augmentation + quadrant crops + 80/20 split + Bayesian tuning
 import os
 import random
 import pickle
@@ -20,9 +19,7 @@ from transformers import CLIPModel, CLIPProcessor
 import optuna
 from optuna.samplers import TPESampler
 
-
 ############################## Load in the SemEval data ##############################
-
 def load_data(file_path, train_val="trial", target_size=(384, 384), use_cache=True):
     """
     Load SemEval data and images with optional disk caching.
@@ -81,7 +78,6 @@ def load_data(file_path, train_val="trial", target_size=(384, 384), use_cache=Tr
 
 
 ############################## Text helpers (micro-prompts + dual-channel) ##############################
-
 def extract_context_word(target: str, sentence: str) -> str:
     """
     Try to extract the 'context word' when the sentence looks like:
@@ -227,7 +223,6 @@ def get_prompted_text_embedding(
 
     return mean_feat
 
-
 def get_dual_channel_text_embedding(
     target: str,
     sentence: str,
@@ -256,7 +251,6 @@ def get_dual_channel_text_embedding(
 
 
 ############################## Image Augmentations ##############################
-
 def random_geometric_augment(img: Image.Image) -> Image.Image:
     """Mild random geometric transforms: flip, rotation, slight zoom/crop."""
     w, h = img.size
@@ -280,7 +274,6 @@ def random_geometric_augment(img: Image.Image) -> Image.Image:
         out = out.resize((w, h), resample=Image.BICUBIC)
 
     return out
-
 
 def random_photometric_augment(img: Image.Image) -> Image.Image:
     """Mild brightness/contrast/color/blur jitter."""
@@ -309,7 +302,6 @@ def random_photometric_augment(img: Image.Image) -> Image.Image:
         out = out.filter(ImageFilter.GaussianBlur(radius=0.3))
 
     return out
-
 
 def generate_tta_views(
     img: Image.Image,
@@ -367,7 +359,6 @@ def generate_tta_views(
 
     return views
 
-
 def multi_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Image]:
     """Center + four corners + zoomed center (multi-crop)."""
     w, h = img.size
@@ -410,7 +401,6 @@ def multi_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Image]:
 
     return crops
 
-
 def grid_patches(img: Image.Image, grid_size=3, out_size=(224, 224)) -> list[Image.Image]:
     """Split the image into a grid (e.g., 3x3) and return patches."""
     w, h = img.size
@@ -430,7 +420,6 @@ def grid_patches(img: Image.Image, grid_size=3, out_size=(224, 224)) -> list[Ima
 
     return patches
 
-
 def center_saliency_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Image]:
     """
     Lightweight 'saliency-like' center crops: smaller crops around the center.
@@ -447,7 +436,6 @@ def center_saliency_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.I
         crops.append(crop.resize(out_size, resample=Image.BICUBIC))
 
     return crops
-
 
 def mid_quadrant_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Image]:
     """
@@ -475,7 +463,6 @@ def mid_quadrant_crops(img: Image.Image, out_size=(224, 224)) -> list[Image.Imag
         crops.append(crop.resize(out_size, resample=Image.BICUBIC))
 
     return crops
-
 
 def get_image_embedding(
     img: Image.Image,
@@ -533,9 +520,7 @@ def get_image_embedding(
 
     return feat_final
 
-
 ############################## Choosing Images ##############################
-
 def choose_image(
     target,
     sentence,
@@ -610,9 +595,7 @@ def choose_image(
     ranked_embs = [None] * len(ranked_images)
     return ranked_images, ranked_captions, ranked_embs
 
-
 ############################## Evaluation helpers ##############################
-
 def evaluate_subset(
     df: pd.DataFrame,
     image_dict: dict,
@@ -654,18 +637,14 @@ def evaluate_subset(
     hit = np.mean(ranks == 1)
     return mrr, hit
 
-
 ############################## Optuna Objective ##############################
-
 def objective(trial, data, val_idx, image_dict, model, processor):
     """
     Optuna objective: sample hyperparameters and evaluate on fixed validation subset.
     Returns negative MRR so that direction='minimize' corresponds to maximizing MRR.
     """
 
-    # ------------------------------
-    # Sample hyperparameters
-    # ------------------------------
+
     photo_weight = trial.suggest_float("photo_weight", 0.1, 0.9)
     semantic_weight = trial.suggest_float("semantic_weight", 0.1, 0.9)
 
@@ -676,9 +655,7 @@ def objective(trial, data, val_idx, image_dict, model, processor):
 
     temp = trial.suggest_float("temp", 0.4, 1.0)
 
-    # ------------------------------
     # Fixed validation subset (80/20 split precomputed)
-    # ------------------------------
     val_data = data.iloc[val_idx]
 
     mrr, hit = evaluate_subset(
@@ -698,14 +675,10 @@ def objective(trial, data, val_idx, image_dict, model, processor):
     # Optuna minimizes, so return negative MRR
     return -mrr
 
-
 ############################## Main ##############################
-
 if __name__ == "__main__":
 
-    ###########################################################################
     # Device Setup
-    ###########################################################################
     if torch.backends.mps.is_available():
         device = torch.device("mps")
     elif torch.cuda.is_available():
@@ -715,9 +688,7 @@ if __name__ == "__main__":
 
     print(f"Using device: {device}")
 
-    ###########################################################################
     # Load Dataset
-    ###########################################################################
     file_path = "dataset"
     print_output = False
 
@@ -725,9 +696,7 @@ if __name__ == "__main__":
     nltk.download("wordnet", quiet=True)
     nltk.download("omw-1.4", quiet=True)
 
-    ###########################################################################
     # Load CLIP (currently ViT-B/32; change model_name if you want ViT-L/14)
-    ###########################################################################
     model_name = "openai/clip-vit-base-patch32"
     processor = CLIPProcessor.from_pretrained(model_name)
     model = CLIPModel.from_pretrained(model_name).to(device)
@@ -735,9 +704,7 @@ if __name__ == "__main__":
     print("Loading dataset (trial set)...")
     data, image_dict = load_data(file_path=file_path, train_val="trial")
 
-    ###########################################################################
     # 80/20 Internal Split (for reference)
-    ###########################################################################
     np.random.seed(42)
     indices = np.arange(len(data))
     np.random.shuffle(indices)
@@ -751,11 +718,9 @@ if __name__ == "__main__":
 
     print(f"[INFO] Training size: {len(train_data)} | Validation size: {len(val_data)}")
 
-    ###########################################################################
     # Bayesian Optimization (Optuna)
-    ###########################################################################
     print("\n==============================")
-    print("🔥 Starting Bayesian tuning...")
+    print("Starting Bayesian tuning...")
     print("==============================")
 
     sampler = TPESampler(seed=42)
@@ -779,12 +744,8 @@ if __name__ == "__main__":
         show_progress_bar=True,
     )
 
-    ###########################################################################
     # Print / Save Best Hyperparameters
-    ###########################################################################
-    print("\n==============================")
-    print("🏆 BEST BAYESIAN TRIAL")
-    print("==============================")
+    print("BEST BAYESIAN TRIAL")
     best_trial = study.best_trial
     best_params = best_trial.params
     print("Best params:", best_params)
@@ -794,9 +755,7 @@ if __name__ == "__main__":
     with open("best_hyperparams.pkl", "wb") as f:
         pickle.dump(best_params, f)
 
-    ###########################################################################
     # Final Evaluation on Full Trial Set (using best hyperparameters)
-    ###########################################################################
     print("\nEvaluating full TRIAL set using best hyperparameters...")
 
     # Unpack best params
@@ -818,11 +777,9 @@ if __name__ == "__main__":
         temp=temp,
     )
 
-    ###########################################################################
     # Print Evaluation Metrics
-    ###########################################################################
     print("\n==============================")
-    print("📊 FINAL RESULTS (Trial Set)")
+    print("FINAL RESULTS")
     print("==============================")
     print(f"MRR:      {final_mrr:.6f}")
     print(f"Hit Rate: {final_hit:.6f}")
