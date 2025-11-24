@@ -11,13 +11,8 @@ The versions of Python used to run include Python 3.13.3 and 3.9.6.
 The requirements.txt file includes the versions of the packages we used.
 
 
-## RESULTS:
+## Dataset:
 
 The dataset can be found at https://raganato.github.io/vwsd/
 
-### Test Sets
-Base Clip Approach:
-
-`MRR: 0.7511`\
-`Hit Rate: 0.6199`
 
