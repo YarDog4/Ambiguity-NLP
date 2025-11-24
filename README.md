@@ -6,6 +6,10 @@ Ambiguity poses persistent challenges in natural language understanding for both
 
 On a window's system, you can run this code by running ```python final.py```. final.py is the file with the most recent model. All the other files are various scripts we used to debug and test earlier versions of the model.
 
+The versions of Python used to run include Python 3.13.3 and 3.9.6.
+
+The requirement.txt file includes the versions of the packages we used.
+
 
 ## RESULTS:
 
