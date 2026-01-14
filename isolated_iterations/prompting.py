@@ -46,3 +46,36 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+# Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+# Loading cached images from dataset/trial_v1/image_cache.pkl...
+# Loaded 156 cached images
+
+# ==============================
+# COMPUTATIONAL COST PROFILE
+# ==============================
+# Config: prompting=True | augmentations=False
+# Device: mps:0
+# Profiled queries: 16
+# Candidates/query: 10
+# Views per image: 1
+
+# Text embedding latency:
+#   Mean: 39.43 ms | P50: 9.84 | P90: 85.22 | P95: 145.39
+
+# Image embedding latency:
+#   Mean: 5.28 ms/image | P50: 5.14 | P90: 5.80 | P95: 5.95
+#   Est. image-embedding per query (10 candidates): 52.81 ms/query
+
+# End-to-end ranking latency (10 candidates):
+#   Mean: 62.95 ms/query | P50: 63.53 | P90: 67.99 | P95: 68.70
+# ==============================
+
+
+# === ONLY PROMPTING ===
+# Device: mps
+# Temp: 0.7 | photo_w: 0.6 | sem_w: 0.4
+# MRR: 0.750595
+# Hit@1: 0.625000
