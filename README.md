@@ -6,14 +6,13 @@ Ambiguity poses persistent challenges in natural language understanding for both
 
 On a window's system, you can run this code by running ```python final.py```. final.py is the file with the most recent model. All the other files are various scripts we used to debug and test earlier versions of the model.
 
+The versions of Python used to run include Python 3.13.3 and 3.9.6.
 
-## RESULTS:
+The requirements.txt file includes the versions of the packages we used.
+
+
+## Dataset:
 
 The dataset can be found at https://raganato.github.io/vwsd/
 
-### Test Sets
-Base Clip Approach:
-
-`MRR: 0.7511`\
-`Hit Rate: 0.6199`
 
