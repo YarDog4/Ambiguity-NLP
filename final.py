@@ -19,6 +19,210 @@ from transformers import CLIPModel, CLIPProcessor
 import optuna
 from optuna.samplers import TPESampler
 
+import time
+
+############################## This is for measuring some data ##############################
+def profile_existing_inference_cost(
+    df,
+    image_dict,
+    model,
+    processor,
+    photo_weight=0.6,
+    semantic_weight=0.4,
+    temp=0.7,
+    num_rows=50,
+    warmup=5,
+    seed=42,
+    out_size=(224, 224),
+):
+    """
+    Profiles computational cost EXACTLY as your current inference code does.
+
+    Measures:
+      1) Number of augmented views per image embedding (from your actual view pipeline)
+      2) Latency for:
+         - text embedding (dual-channel prompts)
+         - image embedding (multi-view)
+         - end-to-end choose_image (1 query with 10 candidate images)
+
+    Prints an understandable summary (mean + p50/p90/p95).
+    """
+
+    def _device_of(m): 
+        return next(m.parameters()).device
+
+    def _sync(device):
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+
+    def _stats(seconds_list):
+        arr = np.array(seconds_list, dtype=float)
+        if arr.size == 0:
+            return {"mean": float("nan"), "p50": float("nan"), "p90": float("nan"), "p95": float("nan")}
+        return {
+            "mean": float(arr.mean()),
+            "p50": float(np.percentile(arr, 50)),
+            "p90": float(np.percentile(arr, 90)),
+            "p95": float(np.percentile(arr, 95)),
+        }
+
+    def _ms(x): 
+        return x * 1000.0
+
+    # --- Count views using your *actual* view generation functions ---
+    def _count_views(img):
+        # Mirrors get_image_embedding()'s view construction in your current code
+        views = []
+        views.extend(generate_tta_views(img, num_random_augs=2, out_size=out_size))
+        views.extend(multi_crops(img, out_size=out_size))
+        views.extend(grid_patches(img, grid_size=3, out_size=out_size))
+        views.extend(center_saliency_crops(img, out_size=out_size))
+        views.extend(mid_quadrant_crops(img, out_size=out_size))
+        return len(views)
+
+    # --- Setup ---
+    device = _device_of(model)
+    model.eval()
+
+    df = df.reset_index(drop=True)
+    if len(df) == 0:
+        print("[profile_existing_inference_cost] df is empty; nothing to profile.")
+        return
+
+    rng = np.random.default_rng(seed)
+    n = min(num_rows, len(df))
+    sample_idxs = rng.choice(len(df), size=n, replace=False)
+    sample_df = df.iloc[sample_idxs]
+
+    # Find one real image to count views on
+    views_per_image = None
+    for _, row in sample_df.iterrows():
+        candidates = [row[f"image_{i}"] for i in range(10)]
+        name = next((c for c in candidates if c in image_dict), None)
+        if name is not None:
+            views_per_image = _count_views(image_dict[name])
+            break
+    if views_per_image is None:
+        views_per_image = 0  # if your dict doesn't contain the sampled filenames
+
+    # --- Warmup (reduces first-run overhead) ---
+    for _ in range(max(0, warmup)):
+        r = sample_df.iloc[0]
+        candidates = [r[f"image_{i}"] for i in range(10)]
+        _ = get_dual_channel_text_embedding(
+            target=r["target"],
+            sentence=r["sentence"],
+            processor=processor,
+            model=model,
+            photo_weight=photo_weight,
+            semantic_weight=semantic_weight,
+        )
+        for c in candidates:
+            if c in image_dict:
+                _ = get_image_embedding(image_dict[c], processor=processor, model=model, temp=temp)
+                break
+        _ = choose_image(
+            target=r["target"],
+            sentence=r["sentence"],
+            images=candidates,
+            image_dict=image_dict,
+            model=model,
+            processor=processor,
+            photo_weight=photo_weight,
+            semantic_weight=semantic_weight,
+            temp=temp,
+            print_output=False,
+        )
+    _sync(device)
+
+    # --- Timing ---
+    text_times = []
+    image_times = []
+    query_times = []  # end-to-end choose_image
+
+    for _, row in sample_df.iterrows():
+        target = row["target"]
+        sentence = row["sentence"]
+        candidates = [row[f"image_{i}"] for i in range(10)]
+
+        # 1) Text embedding time (matches your choose_image text path)
+        _sync(device)
+        t0 = time.perf_counter()
+        _ = get_dual_channel_text_embedding(
+            target=target,
+            sentence=sentence,
+            processor=processor,
+            model=model,
+            photo_weight=photo_weight,
+            semantic_weight=semantic_weight,
+        )
+        _sync(device)
+        t1 = time.perf_counter()
+        text_times.append(t1 - t0)
+
+        # 2) Image embedding time (matches your get_image_embedding for each candidate)
+        for name in candidates:
+            img = image_dict.get(name, None)
+            if img is None:
+                continue
+            _sync(device)
+            i0 = time.perf_counter()
+            _ = get_image_embedding(img, processor=processor, model=model, temp=temp)
+            _sync(device)
+            i1 = time.perf_counter()
+            image_times.append(i1 - i0)
+
+        # 3) End-to-end choose_image time (the real inference call)
+        _sync(device)
+        q0 = time.perf_counter()
+        _ = choose_image(
+            target=target,
+            sentence=sentence,
+            images=candidates,
+            image_dict=image_dict,
+            model=model,
+            processor=processor,
+            photo_weight=photo_weight,
+            semantic_weight=semantic_weight,
+            temp=temp,
+            print_output=False,
+        )
+        _sync(device)
+        q1 = time.perf_counter()
+        query_times.append(q1 - q0)
+
+    # --- Summaries ---
+    ts = _stats(text_times)
+    ims = _stats(image_times)
+    qs = _stats(query_times)
+
+    # Estimate per-query image-embedding cost assuming 10 candidates
+    # (This is a practical estimate readers like.)
+    if not np.isnan(ims["mean"]):
+        est_img_cost_per_query = ims["mean"] * 10.0
+    else:
+        est_img_cost_per_query = float("nan")
+
+    print("\n==============================")
+    print("COMPUTATIONAL COST (Matches Existing Code)")
+    print("==============================")
+    print(f"Device: {device}")
+    print(f"Profiled queries: {n}")
+    print(f"Candidates per query: 10")
+    print(f"Augmented views per image embedding: {views_per_image}")
+    print("")
+    print("Text embedding latency (dual-channel prompts):")
+    print(f"  Mean: {_ms(ts['mean']):.2f} ms | P50: {_ms(ts['p50']):.2f} | P90: {_ms(ts['p90']):.2f} | P95: {_ms(ts['p95']):.2f}")
+    print("")
+    print("Image embedding latency (multi-view CLIP per candidate image):")
+    print(f"  Mean: {_ms(ims['mean']):.2f} ms/image | P50: {_ms(ims['p50']):.2f} | P90: {_ms(ims['p90']):.2f} | P95: {_ms(ims['p95']):.2f}")
+    print(f"  Estimated image-embedding cost per query (10 candidates): {_ms(est_img_cost_per_query):.2f} ms/query")
+    print("")
+    print("End-to-end inference latency (choose_image on 10 candidates):")
+    print(f"  Mean: {_ms(qs['mean']):.2f} ms/query | P50: {_ms(qs['p50']):.2f} | P90: {_ms(qs['p90']):.2f} | P95: {_ms(qs['p95']):.2f}")
+    print("==============================\n")
+
+
 ############################## Load in the SemEval data ##############################
 def load_data(file_path, train_val="trial", target_size=(384, 384), use_cache=True):
     """
@@ -638,12 +842,11 @@ def evaluate_subset(
     return mrr, hit
 
 ############################## Optuna Objective ##############################
-def objective(trial, data, val_idx, image_dict, model, processor):
+def objective(trial, val_data, image_dict, model, processor):
     """
     Optuna objective: sample hyperparameters and evaluate on fixed validation subset.
     Returns negative MRR so that direction='minimize' corresponds to maximizing MRR.
     """
-
 
     photo_weight = trial.suggest_float("photo_weight", 0.1, 0.9)
     semantic_weight = trial.suggest_float("semantic_weight", 0.1, 0.9)
@@ -654,9 +857,6 @@ def objective(trial, data, val_idx, image_dict, model, processor):
     semantic_weight /= total
 
     temp = trial.suggest_float("temp", 0.4, 1.0)
-
-    # Fixed validation subset (80/20 split precomputed)
-    val_data = data.iloc[val_idx]
 
     mrr, hit = evaluate_subset(
         val_data,
@@ -701,22 +901,24 @@ if __name__ == "__main__":
     processor = CLIPProcessor.from_pretrained(model_name)
     model = CLIPModel.from_pretrained(model_name).to(device)
 
-    print("Loading dataset (trial set)...")
-    data, image_dict = load_data(file_path=file_path, train_val="trial")
+    print("Loading TRAIN and TEST datasets")
+    train_data, train_image_dict = load_data(file_path=file_path, train_val="train")
+    test_data, test_image_dict = load_data(file_path=file_path, train_val="test")
+
 
     # 80/20 Internal Split (for reference)
     np.random.seed(42)
-    indices = np.arange(len(data))
+    indices = np.arange(len(train_data))
     np.random.shuffle(indices)
 
     split = int(0.8 * len(indices))
     train_idx = indices[:split]
     val_idx = indices[split:]
 
-    train_data = data.iloc[train_idx].reset_index(drop=True)
-    val_data = data.iloc[val_idx].reset_index(drop=True)
+    train_df = train_data.iloc[train_idx].reset_index(drop=True)
+    val_df = train_data.iloc[val_idx].reset_index(drop=True)
 
-    print(f"[INFO] Training size: {len(train_data)} | Validation size: {len(val_data)}")
+    print(f"[INFO] Training size: {len(train_df)} | Validation size: {len(val_df)}")
 
     # Bayesian Optimization (Optuna)
     print("\n==============================")
@@ -734,9 +936,8 @@ if __name__ == "__main__":
     study.optimize(
         lambda trial: objective(
             trial,
-            data=data,
-            val_idx=val_idx,
-            image_dict=image_dict,
+            val_data=val_df,
+            image_dict=train_image_dict,
             model=model,
             processor=processor,
         ),
@@ -768,8 +969,8 @@ if __name__ == "__main__":
     temp = best_params["temp"]
 
     final_mrr, final_hit = evaluate_subset(
-        data,
-        image_dict=image_dict,
+        test_data,
+        image_dict=test_image_dict,
         model=model,
         processor=processor,
         photo_weight=photo_weight,
